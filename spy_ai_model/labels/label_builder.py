@@ -27,18 +27,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import HORIZON
 
 
-def build_labels(df: pd.DataFrame) -> pd.DataFrame:
+def build_labels(df: pd.DataFrame, horizon: int | None = None) -> pd.DataFrame:
     """
     Parameters
     ----------
     df : pd.DataFrame
         1-minute OHLCV bars, DatetimeIndex sorted ascending.
+    horizon : int or None
+        Prediction horizon in bars.  Defaults to config.HORIZON when None.
 
     Returns
     -------
     pd.DataFrame with columns y_dir and y_range, same index as df.
-    Rows that lack a complete HORIZON-bar future window are NaN.
+    Rows that lack a complete horizon-bar future window are NaN.
     """
+    h = HORIZON if horizon is None else horizon
+
     close = df["close"].values
     high  = df["high"].values
     low   = df["low"].values
@@ -47,16 +51,16 @@ def build_labels(df: pd.DataFrame) -> pd.DataFrame:
     y_dir   = np.full(n, np.nan)
     y_range = np.full(n, np.nan)
 
-    for t in range(n - HORIZON):
+    for t in range(n - h):
         c_t      = close[t]
-        c_future = close[t + HORIZON]
+        c_future = close[t + h]
 
-        # direction: 1 if close 60 bars ahead is higher
+        # direction: 1 if close h bars ahead is higher
         y_dir[t] = 1.0 if c_future > c_t else 0.0
 
-        # range: max-high minus min-low over the NEXT HORIZON bars
-        future_high = high[t + 1 : t + HORIZON + 1].max()
-        future_low  = low[t  + 1 : t + HORIZON + 1].min()
+        # range: max-high minus min-low over the NEXT h bars
+        future_high = high[t + 1 : t + h + 1].max()
+        future_low  = low[t  + 1 : t + h + 1].min()
         y_range[t]  = (future_high - future_low) / c_t
 
     result = pd.DataFrame(

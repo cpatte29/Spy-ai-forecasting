@@ -141,6 +141,16 @@ def parse_args():
         help="Path to a local CSV or Parquet file – only used with --mode file.",
     )
     parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Prediction horizon in bars (overrides config HORIZON=60).\n"
+            "For 5m bars, use 12 (= 1 hour).  For 1m bars, use 60 (default)."
+        ),
+    )
+    parser.add_argument(
         "--skip-backtest",
         action="store_true",
         default=False,
@@ -188,9 +198,9 @@ def step_load_data(args):
         raise ValueError(f"Unknown mode: {args.mode}")
 
 
-def step_build_dataset(df_raw):
+def step_build_dataset(df_raw, horizon=None):
     logger.info("=== STEP 2: Building features and labels ===")
-    df_model = build_dataset(df_raw)
+    df_model = build_dataset(df_raw, horizon=horizon)
     logger.info(
         "Dataset ready: %d rows, %d columns  (%d features)",
         len(df_model),
@@ -271,6 +281,8 @@ def main():
     elif args.mode == "real":
         logger.info("║  interval    : %-29s ║", args.interval)
         logger.info("║  period      : %-29s ║", args.period)
+    if args.horizon is not None:
+        logger.info("║  horizon     : %-29s ║", args.horizon)
     logger.info("╚══════════════════════════════════════════════╝")
 
     # 1. Load / generate data
@@ -283,7 +295,7 @@ def main():
     )
 
     # 2. Features + labels
-    df_model = step_build_dataset(df_raw)
+    df_model = step_build_dataset(df_raw, horizon=args.horizon)
 
     # 3. Walk-forward CV
     wf_results = step_walk_forward(df_model)

@@ -23,13 +23,15 @@ from labels.label_builder          import build_labels
 logger = logging.getLogger(__name__)
 
 
-def build_dataset(df_raw: pd.DataFrame) -> pd.DataFrame:
+def build_dataset(df_raw: pd.DataFrame, horizon: int | None = None) -> pd.DataFrame:
     """
     Parameters
     ----------
     df_raw : pd.DataFrame
         1-minute OHLCV bars with columns open/high/low/close/volume,
         indexed by a tz-naive DatetimeIndex sorted ascending.
+    horizon : int or None
+        Prediction horizon in bars.  Overrides config.HORIZON when given.
 
     Returns
     -------
@@ -42,7 +44,7 @@ def build_dataset(df_raw: pd.DataFrame) -> pd.DataFrame:
     df_feat = build_features(df_raw)
 
     logger.info("Building labels …")
-    df_lab  = build_labels(df_raw)
+    df_lab  = build_labels(df_raw, horizon=horizon)
 
     # Align on index (inner join – labels require future bars)
     df = df_feat.join(df_lab[["y_dir", "y_range"]], how="inner")
