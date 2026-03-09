@@ -23,15 +23,24 @@ from labels.label_builder          import build_labels
 logger = logging.getLogger(__name__)
 
 
-def build_dataset(df_raw: pd.DataFrame, horizon: int | None = None) -> pd.DataFrame:
+def build_dataset(
+    df_raw: pd.DataFrame,
+    horizon_dir: int | None = None,
+    horizon_range: int | None = None,
+    horizon: int | None = None,
+) -> pd.DataFrame:
     """
     Parameters
     ----------
     df_raw : pd.DataFrame
-        1-minute OHLCV bars with columns open/high/low/close/volume,
+        OHLCV bars with columns open/high/low/close/volume,
         indexed by a tz-naive DatetimeIndex sorted ascending.
+    horizon_dir : int or None
+        Bars ahead for the direction label (overrides config.HORIZON_DIR).
+    horizon_range : int or None
+        Bars ahead for the range label (overrides config.HORIZON_RANGE).
     horizon : int or None
-        Prediction horizon in bars.  Overrides config.HORIZON when given.
+        Legacy shorthand – sets both horizons when provided.
 
     Returns
     -------
@@ -44,7 +53,7 @@ def build_dataset(df_raw: pd.DataFrame, horizon: int | None = None) -> pd.DataFr
     df_feat = build_features(df_raw)
 
     logger.info("Building labels …")
-    df_lab  = build_labels(df_raw, horizon=horizon)
+    df_lab  = build_labels(df_raw, horizon_dir=horizon_dir, horizon_range=horizon_range, horizon=horizon)
 
     # Align on index (inner join – labels require future bars)
     df = df_feat.join(df_lab[["y_dir", "y_range"]], how="inner")

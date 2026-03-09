@@ -80,6 +80,7 @@ def parse_args():
             "  python main_pipeline.py --mode synthetic --synth-days 500\n"
             "  python main_pipeline.py --mode real --period 30d\n"
             "  python main_pipeline.py --mode real --interval 5m --period 60d\n"
+            "  python main_pipeline.py --mode real --interval 5m --period 60d --horizon-dir 60 --horizon-range 12\n"
             "  python main_pipeline.py --mode real --interval 15m --period 60d\n"
             "  python main_pipeline.py --mode file --file-path spy_1m.csv\n"
         ),
@@ -141,13 +142,23 @@ def parse_args():
         help="Path to a local CSV or Parquet file – only used with --mode file.",
     )
     parser.add_argument(
-        "--horizon",
+        "--horizon-dir",
         type=int,
         default=None,
         metavar="N",
         help=(
-            "Prediction horizon in bars (overrides config HORIZON=60).\n"
-            "For 5m bars, use 12 (= 1 hour).  For 1m bars, use 60 (default)."
+            "Direction label horizon in bars (overrides config HORIZON_DIR=60).\n"
+            "1m bars → 60 (1 hour).  5m bars → 60 (5 hours, captures trend)."
+        ),
+    )
+    parser.add_argument(
+        "--horizon-range",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Range label horizon in bars (overrides config HORIZON_RANGE=60).\n"
+            "1m bars → 60 (1 hour).  5m bars → 12 (1 hour, predicts volatility)."
         ),
     )
     parser.add_argument(
@@ -198,9 +209,9 @@ def step_load_data(args):
         raise ValueError(f"Unknown mode: {args.mode}")
 
 
-def step_build_dataset(df_raw, horizon=None):
+def step_build_dataset(df_raw, horizon_dir=None, horizon_range=None):
     logger.info("=== STEP 2: Building features and labels ===")
-    df_model = build_dataset(df_raw, horizon=horizon)
+    df_model = build_dataset(df_raw, horizon_dir=horizon_dir, horizon_range=horizon_range)
     logger.info(
         "Dataset ready: %d rows, %d columns  (%d features)",
         len(df_model),
@@ -281,8 +292,10 @@ def main():
     elif args.mode == "real":
         logger.info("║  interval    : %-29s ║", args.interval)
         logger.info("║  period      : %-29s ║", args.period)
-    if args.horizon is not None:
-        logger.info("║  horizon     : %-29s ║", args.horizon)
+    if args.horizon_dir is not None:
+        logger.info("║  horizon-dir : %-29s ║", args.horizon_dir)
+    if args.horizon_range is not None:
+        logger.info("║  horizon-rng : %-29s ║", args.horizon_range)
     logger.info("╚══════════════════════════════════════════════╝")
 
     # 1. Load / generate data
@@ -295,7 +308,7 @@ def main():
     )
 
     # 2. Features + labels
-    df_model = step_build_dataset(df_raw, horizon=args.horizon)
+    df_model = step_build_dataset(df_raw, horizon_dir=args.horizon_dir, horizon_range=args.horizon_range)
 
     # 3. Walk-forward CV
     wf_results = step_walk_forward(df_model)

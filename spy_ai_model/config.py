@@ -17,7 +17,9 @@ for _d in (DATA_DIR, MODEL_DIR, REPORT_DIR):
 # ── Data ──────────────────────────────────────────────────────────────────────
 TICKER          = "SPY"
 BAR_INTERVAL    = "1m"          # 1-minute bars
-HORIZON         = 60            # prediction horizon in bars (= 60 minutes)
+HORIZON         = 60            # default horizon (kept for back-compat)
+HORIZON_DIR     = 60            # direction label: bars ahead to predict close
+HORIZON_RANGE   = 60            # range label: bars ahead for high-low window
 MARKET_OPEN     = "09:30"
 MARKET_CLOSE    = "16:00"
 
