@@ -239,13 +239,16 @@ def step_generate_report(wf_results):
     return summary
 
 
-def step_backtest(df_raw, wf_results):
+def step_backtest(df_raw, wf_results, hold_bars=None):
     logger.info("=== STEP 5: Strategy backtest simulation ===")
-    bt_results = run_backtest(
+    kwargs = dict(
         df_raw=df_raw,
         oos_dir_proba=wf_results["oos_dir_proba"],
         oos_index=wf_results["oos_index"],
     )
+    if hold_bars is not None:
+        kwargs["hold_bars"] = hold_bars
+    bt_results = run_backtest(**kwargs)
     print_backtest_report(bt_results)
     return bt_results
 
@@ -320,9 +323,9 @@ def main():
     # 4. Evaluation report
     summary = step_generate_report(wf_results)
 
-    # 5. Backtest
+    # 5. Backtest  (hold period matches direction horizon)
     if not args.skip_backtest:
-        step_backtest(df_raw, wf_results)
+        step_backtest(df_raw, wf_results, hold_bars=args.horizon_dir)
 
     # 6. Final models
     if not args.skip_final_model:

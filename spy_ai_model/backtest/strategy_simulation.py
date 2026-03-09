@@ -34,7 +34,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import (
-    DIR_PROB_THRESHOLD, TRANSACTION_COST_BP, HORIZON, REPORT_DIR
+    DIR_PROB_THRESHOLD, TRANSACTION_COST_BP, HORIZON_DIR, REPORT_DIR
 )
 
 logger = logging.getLogger(__name__)
@@ -48,15 +48,17 @@ def run_backtest(
     oos_index:     pd.DatetimeIndex,
     threshold:     float = DIR_PROB_THRESHOLD,
     cost_bp:       float = TRANSACTION_COST_BP,
+    hold_bars:     int   = HORIZON_DIR,
 ) -> dict:
     """
     Parameters
     ----------
-    df_raw        : full 1-minute OHLCV DataFrame (used to look up exit prices)
+    df_raw        : full OHLCV DataFrame (used to look up exit prices)
     oos_dir_proba : OOS predicted probabilities aligned with oos_index
     oos_index     : DatetimeIndex of OOS rows
     threshold     : minimum P(up) to enter a trade
     cost_bp       : one-way transaction cost in basis points
+    hold_bars     : bars to hold each trade (should match horizon_dir)
 
     Returns
     -------
@@ -95,12 +97,11 @@ def run_backtest(
             if entry_price is None:
                 continue
 
-            # Compute approximate exit time (HORIZON bars later within same session)
-            # Find the HORIZON-th bar in oos_index after current
+            # Compute exit time: hold_bars bars ahead in the OOS index
             future_candidates = signals.index[signals.index > ts]
-            if len(future_candidates) < HORIZON:
+            if len(future_candidates) < hold_bars:
                 break   # not enough future bars
-            exit_time = future_candidates[HORIZON - 1]
+            exit_time = future_candidates[hold_bars - 1]
 
             in_trade = True
             trades.append({
@@ -143,10 +144,13 @@ def run_backtest(
     else:
         ann_ret = 0.0
 
-    # Sharpe (trade-level, annualised assuming ~4 trades/day)
-    trades_per_year = 4 * 252
+    # Sharpe (trade-level, annualised from observed trade frequency)
+    if days_span > 0:
+        trades_per_year = n_trades * 252 / max(days_span, 1)
+    else:
+        trades_per_year = n_trades
     if net_pnls.std() > 0:
-        sharpe = (net_pnls.mean() / net_pnls.std()) * np.sqrt(trades_per_year)
+        sharpe = (net_pnls.mean() / net_pnls.std()) * np.sqrt(max(trades_per_year, 1))
     else:
         sharpe = 0.0
 
