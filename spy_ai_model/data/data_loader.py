@@ -40,7 +40,11 @@ def _filter_market_hours(df: pd.DataFrame) -> pd.DataFrame:
 
 def _standardise_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Lower-case columns, drop extras, verify required cols exist."""
-    df.columns = [c.lower() for c in df.columns]
+    # yfinance ≥0.2 returns a MultiIndex (metric, ticker); flatten to metric only
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0].lower() for c in df.columns]
+    else:
+        df.columns = [c.lower() for c in df.columns]
     required = ["open", "high", "low", "close", "volume"]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -86,8 +90,8 @@ def load_from_yfinance(
         days = period_days.get(period, 30)
         start_dt = end_dt - pd.Timedelta(days=days)
 
-    # yfinance 1m limit: 30 days; fetch in 25-day chunks to be safe
-    chunk_size = dt.timedelta(days=25)
+    # yfinance 1m limit: 8 days per request; fetch in 7-day chunks to be safe
+    chunk_size = dt.timedelta(days=7)
     frames = []
     chunk_start = start_dt
 
