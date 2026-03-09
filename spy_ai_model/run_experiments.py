@@ -8,10 +8,13 @@ Experiments
 A) 5m bars / 60-bar direction horizon / default params
    → threshold sweep: 0.525, 0.528, 0.530, 0.535
 
-B) 5m bars / 60-bar direction horizon / conservative params
+B) 5m bars / 60-bar direction horizon / moderate params
    → threshold sweep: 0.525, 0.528, 0.530, 0.535
 
-C) 15m bars / 4-bar direction horizon / default params
+C) 5m bars / 60-bar direction horizon / conservative params
+   → threshold sweep: 0.525, 0.528, 0.530, 0.535
+
+D) 15m bars / 4-bar direction horizon / default params
    → threshold sweep: 0.510, 0.515, 0.520, 0.525
 
 Usage
@@ -47,7 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_experiments")
 
-from config import DIRECTION_PARAMS_CONSERVATIVE
+from config import DIRECTION_PARAMS_MODERATE, DIRECTION_PARAMS_CONSERVATIVE
 from data.data_loader import load_from_yfinance, load_synthetic
 from data.dataset_builder import build_dataset
 from evaluation.walk_forward import walk_forward_cv
@@ -132,9 +135,13 @@ def _run_pipeline(df_raw, horizon_dir, horizon_range, direction_params=None, lab
     """Build dataset + walk-forward CV.  Returns (df_raw, wf_results, oos_auc)."""
     logger.info("─" * 60)
     logger.info("EXPERIMENT: %s", label)
+    _preset_names = {
+        id(DIRECTION_PARAMS_MODERATE):    "moderate",
+        id(DIRECTION_PARAMS_CONSERVATIVE): "conservative",
+    }
+    preset_label = _preset_names.get(id(direction_params), "default") if direction_params else "default"
     logger.info("  interval=%s  horizon_dir=%d  horizon_range=%d  params=%s",
-                "inferred", horizon_dir, horizon_range,
-                "conservative" if direction_params else "default")
+                "inferred", horizon_dir, horizon_range, preset_label)
     logger.info("─" * 60)
 
     df_model = build_dataset(df_raw, horizon_dir=horizon_dir, horizon_range=horizon_range)
@@ -196,26 +203,36 @@ def main():
     for row in sweep_A:
         results_table.append({"experiment": "A-default-5m", "oos_auc": auc_A, **row})
 
-    # ── Experiment B: 5m / conservative params ─────────────────────────────────
+    # ── Experiment B: 5m / moderate params ─────────────────────────────────────
     wf_B, auc_B = _run_pipeline(
         df_5m, horizon_dir=60, horizon_range=12,
-        direction_params=DIRECTION_PARAMS_CONSERVATIVE,
-        label="B: 5m | 60-bar horizon | conservative params",
+        direction_params=DIRECTION_PARAMS_MODERATE,
+        label="B: 5m | 60-bar horizon | moderate params",
     )
     sweep_B = _sweep_thresholds(df_5m, wf_B, thresholds_5m, hold_bars=60)
     for row in sweep_B:
-        results_table.append({"experiment": "B-conservative-5m", "oos_auc": auc_B, **row})
+        results_table.append({"experiment": "B-moderate-5m", "oos_auc": auc_B, **row})
 
-    # ── Experiment C: 15m / default params ─────────────────────────────────────
+    # ── Experiment C: 5m / conservative params ─────────────────────────────────
     wf_C, auc_C = _run_pipeline(
+        df_5m, horizon_dir=60, horizon_range=12,
+        direction_params=DIRECTION_PARAMS_CONSERVATIVE,
+        label="C: 5m | 60-bar horizon | conservative params",
+    )
+    sweep_C = _sweep_thresholds(df_5m, wf_C, thresholds_5m, hold_bars=60)
+    for row in sweep_C:
+        results_table.append({"experiment": "C-conservative-5m", "oos_auc": auc_C, **row})
+
+    # ── Experiment D: 15m / default params ─────────────────────────────────────
+    wf_D, auc_D = _run_pipeline(
         df_15m, horizon_dir=4, horizon_range=4,
         direction_params=None,
-        label="C: 15m | 4-bar horizon (1h) | default params",
+        label="D: 15m | 4-bar horizon (1h) | default params",
     )
     thresholds_15m = [0.510, 0.515, 0.520, 0.525]
-    sweep_C = _sweep_thresholds(df_15m, wf_C, thresholds_15m, hold_bars=4)
-    for row in sweep_C:
-        results_table.append({"experiment": "C-default-15m", "oos_auc": auc_C, **row})
+    sweep_D = _sweep_thresholds(df_15m, wf_D, thresholds_15m, hold_bars=4)
+    for row in sweep_D:
+        results_table.append({"experiment": "D-default-15m", "oos_auc": auc_D, **row})
 
     # ── Print comparison table ─────────────────────────────────────────────────
     df_out = pd.DataFrame(results_table)

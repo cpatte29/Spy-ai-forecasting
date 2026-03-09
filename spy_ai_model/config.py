@@ -54,7 +54,30 @@ DIRECTION_PARAMS = {
     "verbose":          -1,
 }
 
-# Conservative preset – tighter regularisation to reduce train/OOS overfit gap.
+# Moderate preset – balanced regularisation to reduce train/OOS overfit gap
+# while preserving enough model capacity for the typical 1500–2000 row folds.
+# Key changes vs default:
+#   num_leaves    63  → 31    (shallower trees, less capacity)
+#   max_depth     -1  → 6     (hard cap on tree depth)
+#   min_child_samples 50 → 60  (slight increase, still fits fold sizes)
+#   reg_alpha    0.1  → 0.5   (moderate L1 weight penalty)
+#   reg_lambda   1.0  → 2.0   (moderate L2 weight penalty)
+#   subsample    0.8  → 0.75  (mild bagging noise increase)
+#   colsample_bytree 0.8 → 0.75
+DIRECTION_PARAMS_MODERATE = {
+    **DIRECTION_PARAMS,
+    "num_leaves":        31,
+    "max_depth":         6,
+    "min_child_samples": 60,
+    "subsample":         0.75,
+    "colsample_bytree":  0.75,
+    "reg_alpha":         0.5,
+    "reg_lambda":        2.0,
+}
+
+# Conservative preset – strong regularisation; best used with larger datasets
+# (≥3000 rows per fold). With ~1500-row folds min_child_samples=100 can cause
+# early stopping at iteration 1 and probability collapse.
 # Key changes vs default:
 #   num_leaves    63  → 31    (shallower trees, less capacity)
 #   max_depth     -1  → 6     (hard cap on tree depth)

@@ -46,7 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger("main_pipeline")
 
 # ── project imports (after sys.path fix) ──────────────────────────────────────
-from config import REPORT_DIR, MODEL_DIR, DIRECTION_PARAMS_CONSERVATIVE
+from config import REPORT_DIR, MODEL_DIR, DIRECTION_PARAMS_MODERATE, DIRECTION_PARAMS_CONSERVATIVE
 
 from data.data_loader import load_synthetic, load_from_yfinance, load_from_file
 from data.dataset_builder import build_dataset, split_features_labels
@@ -176,13 +176,14 @@ def parse_args():
     )
     parser.add_argument(
         "--reg-preset",
-        choices=["default", "conservative"],
+        choices=["default", "moderate", "conservative"],
         default="default",
         help=(
             "Direction model regularisation preset.\n"
             "  default      – num_leaves=63, max_depth=-1, reg_alpha=0.1, reg_lambda=1\n"
-            "  conservative – num_leaves=31, max_depth=6,  reg_alpha=1.0, reg_lambda=5\n"
-            "Use 'conservative' to reduce the train/OOS overfit gap."
+            "  moderate     – num_leaves=31, max_depth=6,  reg_alpha=0.5, reg_lambda=2  (recommended for 60d data)\n"
+            "  conservative – num_leaves=31, max_depth=6,  reg_alpha=1.0, reg_lambda=5  (needs ≥90d data)\n"
+            "Use 'moderate' or 'conservative' to reduce the train/OOS overfit gap."
         ),
     )
     parser.add_argument(
@@ -350,7 +351,11 @@ def main():
     df_model = step_build_dataset(df_raw, horizon_dir=args.horizon_dir, horizon_range=args.horizon_range)
 
     # 3. Walk-forward CV
-    dir_params = DIRECTION_PARAMS_CONSERVATIVE if args.reg_preset == "conservative" else None
+    _PRESET_MAP = {
+        "moderate":    DIRECTION_PARAMS_MODERATE,
+        "conservative": DIRECTION_PARAMS_CONSERVATIVE,
+    }
+    dir_params = _PRESET_MAP.get(args.reg_preset)
     wf_results = step_walk_forward(df_model, direction_params=dir_params)
 
     if not wf_results["fold_results"]:
