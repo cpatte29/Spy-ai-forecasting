@@ -66,20 +66,25 @@ class FoldResult:
     fi_range: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
-def _make_date_folds(trading_dates: np.ndarray) -> list[tuple]:
-    """Return list of (train_idx_slice, val_idx_slice) as date-index positions."""
-    n      = len(trading_dates)
-    folds  = []
-    start  = 0
+def _make_date_folds(
+    trading_dates: np.ndarray,
+    train_days: int = TRAIN_DAYS,
+    val_days: int   = VAL_DAYS,
+    step_days: int  = STEP_DAYS,
+) -> list[tuple]:
+    """Return list of (train_dates, val_dates) arrays."""
+    n     = len(trading_dates)
+    folds = []
+    start = 0
 
-    while start + TRAIN_DAYS + VAL_DAYS <= n:
-        train_end = start + TRAIN_DAYS
-        val_end   = train_end + VAL_DAYS
+    while start + train_days + val_days <= n:
+        train_end = start + train_days
+        val_end   = train_end + val_days
         folds.append((
-            trading_dates[start      : train_end],
-            trading_dates[train_end  : val_end],
+            trading_dates[start     : train_end],
+            trading_dates[train_end : val_end],
         ))
-        start += STEP_DAYS
+        start += step_days
 
     return folds
 
@@ -111,10 +116,23 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
     folds         = _make_date_folds(trading_dates)
 
     if not folds:
-        raise ValueError(
-            f"Not enough data for even one fold. Need at least "
-            f"{TRAIN_DAYS + VAL_DAYS} trading days, got {len(trading_dates)}."
+        # Auto-scale: 60% train / 25% val / 15% step of available days
+        n     = len(trading_dates)
+        train = max(5, int(n * 0.60))
+        val   = max(2, int(n * 0.25))
+        step  = max(1, int(n * 0.15))
+        logger.warning(
+            "Not enough data for default fold sizes (%d+%d days). "
+            "Auto-scaling to train=%d, val=%d, step=%d for %d available trading days.",
+            TRAIN_DAYS, VAL_DAYS, train, val, step, n,
         )
+        folds = _make_date_folds(trading_dates, train_days=train, val_days=val, step_days=step)
+
+        if not folds:
+            raise ValueError(
+                f"Not enough data for even one fold after auto-scaling. "
+                f"Got only {n} trading days — need at least 7."
+            )
 
     logger.info(
         "Walk-forward CV: %d folds  (train=%dd, val=%dd, step=%dd)",
