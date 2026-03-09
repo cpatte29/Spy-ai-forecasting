@@ -54,6 +54,26 @@ DIRECTION_PARAMS = {
     "verbose":          -1,
 }
 
+# Conservative preset – tighter regularisation to reduce train/OOS overfit gap.
+# Key changes vs default:
+#   num_leaves    63  → 31    (shallower trees, less capacity)
+#   max_depth     -1  → 6     (hard cap on tree depth)
+#   min_child_samples 50 → 100 (require more evidence per leaf)
+#   reg_alpha    0.1  → 1.0   (stronger L1 weight penalty)
+#   reg_lambda   1.0  → 5.0   (stronger L2 weight penalty)
+#   subsample    0.8  → 0.7   (more bagging noise)
+#   colsample_bytree 0.8 → 0.7
+DIRECTION_PARAMS_CONSERVATIVE = {
+    **DIRECTION_PARAMS,
+    "num_leaves":        31,
+    "max_depth":         6,
+    "min_child_samples": 100,
+    "subsample":         0.7,
+    "colsample_bytree":  0.7,
+    "reg_alpha":         1.0,
+    "reg_lambda":        5.0,
+}
+
 RANGE_PARAMS = {
     "objective":        "regression",
     "metric":           ["mae", "rmse"],

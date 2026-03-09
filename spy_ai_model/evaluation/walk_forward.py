@@ -89,7 +89,10 @@ def _make_date_folds(
     return folds
 
 
-def walk_forward_cv(df_model: pd.DataFrame) -> dict:
+def walk_forward_cv(
+    df_model: pd.DataFrame,
+    direction_params: dict | None = None,
+) -> dict:
     """
     Run walk-forward cross-validation.
 
@@ -97,6 +100,9 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
     ----------
     df_model : pd.DataFrame
         Output of dataset_builder.build_dataset() – features + y_dir + y_range.
+    direction_params : dict, optional
+        Override / extend DIRECTION_PARAMS for the direction model only.
+        Useful for comparing default vs conservative regularisation presets.
 
     Returns
     -------
@@ -173,7 +179,8 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
         )
 
         # Train models
-        dir_model,  fi_dir   = train_direction_model(X_tr, y_dir_tr, X_vl, y_dir_vl)
+        dir_model,  fi_dir   = train_direction_model(X_tr, y_dir_tr, X_vl, y_dir_vl,
+                                                      params=direction_params)
         rng_model,  fi_range = train_range_model(X_tr, y_rng_tr, X_vl, y_rng_vl)
 
         # Predict on val

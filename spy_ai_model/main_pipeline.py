@@ -46,7 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger("main_pipeline")
 
 # ── project imports (after sys.path fix) ──────────────────────────────────────
-from config import REPORT_DIR, MODEL_DIR
+from config import REPORT_DIR, MODEL_DIR, DIRECTION_PARAMS_CONSERVATIVE
 
 from data.data_loader import load_synthetic, load_from_yfinance, load_from_file
 from data.dataset_builder import build_dataset, split_features_labels
@@ -175,6 +175,17 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--reg-preset",
+        choices=["default", "conservative"],
+        default="default",
+        help=(
+            "Direction model regularisation preset.\n"
+            "  default      – num_leaves=63, max_depth=-1, reg_alpha=0.1, reg_lambda=1\n"
+            "  conservative – num_leaves=31, max_depth=6,  reg_alpha=1.0, reg_lambda=5\n"
+            "Use 'conservative' to reduce the train/OOS overfit gap."
+        ),
+    )
+    parser.add_argument(
         "--skip-backtest",
         action="store_true",
         default=False,
@@ -234,9 +245,9 @@ def step_build_dataset(df_raw, horizon_dir=None, horizon_range=None):
     return df_model
 
 
-def step_walk_forward(df_model):
+def step_walk_forward(df_model, direction_params=None):
     logger.info("=== STEP 3: Walk-forward cross-validation ===")
-    wf_results = walk_forward_cv(df_model)
+    wf_results = walk_forward_cv(df_model, direction_params=direction_params)
     logger.info(
         "Walk-forward complete: %d folds, %d OOS rows",
         len(wf_results["fold_results"]),
@@ -274,7 +285,7 @@ def step_backtest(df_raw, wf_results, hold_bars=None, threshold=None):
     return bt_results
 
 
-def step_save_final_models(df_model):
+def step_save_final_models(df_model, direction_params=None):
     """Train on full dataset (90/10 split for early stopping) and save .pkl files."""
     logger.info("=== STEP 6: Training final models on full dataset ===")
     X, y_dir, y_range = split_features_labels(df_model)
@@ -284,7 +295,8 @@ def step_save_final_models(df_model):
     y_dir_tr,  y_dir_vl  = y_dir.iloc[:split_idx],   y_dir.iloc[split_idx:]
     y_rng_tr,  y_rng_vl  = y_range.iloc[:split_idx],  y_range.iloc[split_idx:]
 
-    dir_model, fi_dir = train_direction_model(X_tr, y_dir_tr, X_vl, y_dir_vl)
+    dir_model, fi_dir = train_direction_model(X_tr, y_dir_tr, X_vl, y_dir_vl,
+                                              params=direction_params)
     rng_model, fi_rng = train_range_model(X_tr, y_rng_tr, X_vl, y_rng_vl)
 
     dir_path = save_direction_model(dir_model)
@@ -322,6 +334,7 @@ def main():
         logger.info("║  horizon-rng : %-29s ║", args.horizon_range)
     if args.threshold is not None:
         logger.info("║  threshold   : %-29s ║", args.threshold)
+    logger.info("║  reg-preset  : %-29s ║", args.reg_preset)
     logger.info("╚══════════════════════════════════════════════╝")
 
     # 1. Load / generate data
@@ -337,7 +350,8 @@ def main():
     df_model = step_build_dataset(df_raw, horizon_dir=args.horizon_dir, horizon_range=args.horizon_range)
 
     # 3. Walk-forward CV
-    wf_results = step_walk_forward(df_model)
+    dir_params = DIRECTION_PARAMS_CONSERVATIVE if args.reg_preset == "conservative" else None
+    wf_results = step_walk_forward(df_model, direction_params=dir_params)
 
     if not wf_results["fold_results"]:
         logger.error("No valid folds produced – increase --synth-days or data range.")
@@ -352,7 +366,7 @@ def main():
 
     # 6. Final models
     if not args.skip_final_model:
-        step_save_final_models(df_model)
+        step_save_final_models(df_model, direction_params=dir_params)
 
     # ── Final summary ──────────────────────────────────────────────────────────
     logger.info("")
