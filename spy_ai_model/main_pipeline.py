@@ -28,6 +28,8 @@ Steps executed
 import argparse
 import logging
 import sys
+
+import numpy as np
 from pathlib import Path
 
 # ── make sure project root is on PYTHONPATH ────────────────────────────────────
@@ -162,6 +164,17 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        metavar="P",
+        help=(
+            "Direction probability threshold to enter a long trade "
+            "(overrides config DIR_PROB_THRESHOLD=0.55).\n"
+            "Use a lower value (e.g. 0.51) when model probabilities are compressed."
+        ),
+    )
+    parser.add_argument(
         "--skip-backtest",
         action="store_true",
         default=False,
@@ -234,12 +247,18 @@ def step_walk_forward(df_model):
 
 def step_generate_report(wf_results):
     logger.info("=== STEP 4: Generating evaluation report ===")
+    proba = wf_results["oos_dir_proba"]
+    logger.info(
+        "OOS dir proba  min=%.4f  p10=%.4f  p50=%.4f  p90=%.4f  max=%.4f",
+        proba.min(), np.percentile(proba, 10), np.percentile(proba, 50),
+        np.percentile(proba, 90), proba.max(),
+    )
     summary = generate_report(wf_results)
     logger.info("Reports saved to: %s", REPORT_DIR)
     return summary
 
 
-def step_backtest(df_raw, wf_results, hold_bars=None):
+def step_backtest(df_raw, wf_results, hold_bars=None, threshold=None):
     logger.info("=== STEP 5: Strategy backtest simulation ===")
     kwargs = dict(
         df_raw=df_raw,
@@ -248,6 +267,8 @@ def step_backtest(df_raw, wf_results, hold_bars=None):
     )
     if hold_bars is not None:
         kwargs["hold_bars"] = hold_bars
+    if threshold is not None:
+        kwargs["threshold"] = threshold
     bt_results = run_backtest(**kwargs)
     print_backtest_report(bt_results)
     return bt_results
@@ -299,6 +320,8 @@ def main():
         logger.info("║  horizon-dir : %-29s ║", args.horizon_dir)
     if args.horizon_range is not None:
         logger.info("║  horizon-rng : %-29s ║", args.horizon_range)
+    if args.threshold is not None:
+        logger.info("║  threshold   : %-29s ║", args.threshold)
     logger.info("╚══════════════════════════════════════════════╝")
 
     # 1. Load / generate data
@@ -325,7 +348,7 @@ def main():
 
     # 5. Backtest  (hold period matches direction horizon)
     if not args.skip_backtest:
-        step_backtest(df_raw, wf_results, hold_bars=args.horizon_dir)
+        step_backtest(df_raw, wf_results, hold_bars=args.horizon_dir, threshold=args.threshold)
 
     # 6. Final models
     if not args.skip_final_model:
