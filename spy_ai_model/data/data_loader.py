@@ -87,8 +87,8 @@ def load_from_yfinance(
         end_dt   = pd.Timestamp.today().normalize()
         # map period string to days
         period_days = {
-            "7d": 7, "14d": 14, "30d": 30, "60d": 60, "90d": 90,
-            "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730,
+            "7d": 7, "14d": 14, "30d": 30, "60d": 58, "90d": 88,
+            "1mo": 30, "3mo": 88, "6mo": 180, "1y": 365, "2y": 730,
         }
         days = period_days.get(period, 30)
         start_dt = end_dt - pd.Timedelta(days=days)
