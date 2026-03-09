@@ -105,6 +105,7 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
     """
     from sklearn.metrics import roc_auc_score, log_loss, mean_absolute_error
     from sklearn.metrics import mean_squared_error
+    import numpy as _np
 
     trading_dates = np.sort(np.unique(df_model.index.normalize()))
     folds         = _make_date_folds(trading_dates)
@@ -147,8 +148,10 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
         logger.info(
             "Fold %d: train=%s→%s (%d rows)  val=%s→%s (%d rows)",
             fold_num,
-            train_dates[0].strftime("%Y-%m-%d"), train_dates[-1].strftime("%Y-%m-%d"), len(X_tr),
-            val_dates[0].strftime("%Y-%m-%d"),   val_dates[-1].strftime("%Y-%m-%d"),   len(X_vl),
+            pd.Timestamp(train_dates[0]).strftime("%Y-%m-%d"),
+            pd.Timestamp(train_dates[-1]).strftime("%Y-%m-%d"), len(X_tr),
+            pd.Timestamp(val_dates[0]).strftime("%Y-%m-%d"),
+            pd.Timestamp(val_dates[-1]).strftime("%Y-%m-%d"),   len(X_vl),
         )
 
         # Train models
@@ -163,7 +166,7 @@ def walk_forward_cv(df_model: pd.DataFrame) -> dict:
         auc      = roc_auc_score(y_dir_vl, dir_prob)
         logloss  = log_loss(y_dir_vl, dir_prob)
         mae      = mean_absolute_error(y_rng_vl, rng_pred)
-        rmse     = mean_squared_error(y_rng_vl, rng_pred, squared=False)
+        rmse     = _np.sqrt(mean_squared_error(y_rng_vl, rng_pred))
 
         logger.info(
             "  → dir AUC=%.4f  logloss=%.4f  |  range MAE=%.5f  RMSE=%.5f",

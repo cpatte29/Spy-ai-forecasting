@@ -47,8 +47,8 @@ def _safe_import_sklearn():
     from sklearn.metrics import (
         roc_auc_score, log_loss, brier_score_loss,
         mean_absolute_error, mean_squared_error, r2_score,
-        calibration_curve,
     )
+    from sklearn.calibration import calibration_curve
     return (
         roc_auc_score, log_loss, brier_score_loss,
         mean_absolute_error, mean_squared_error, r2_score,
@@ -184,7 +184,7 @@ def generate_report(wf_results: dict, report_dir: Path = REPORT_DIR) -> dict:
 
     # ── Range metrics ──────────────────────────────────────────────────────────
     rng_mae  = mean_absolute_error(y_rng_true, y_rng_pred)
-    rng_rmse = mean_squared_error(y_rng_true, y_rng_pred, squared=False)
+    rng_rmse = np.sqrt(mean_squared_error(y_rng_true, y_rng_pred))
     rng_r2   = r2_score(y_rng_true, y_rng_pred)
 
     logger.info("RANGE MODEL – overall OOS metrics")
