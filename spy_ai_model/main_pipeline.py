@@ -79,6 +79,8 @@ def parse_args():
             "  python main_pipeline.py --mode synthetic\n"
             "  python main_pipeline.py --mode synthetic --synth-days 500\n"
             "  python main_pipeline.py --mode real --period 30d\n"
+            "  python main_pipeline.py --mode real --interval 5m --period 60d\n"
+            "  python main_pipeline.py --mode real --interval 15m --period 60d\n"
             "  python main_pipeline.py --mode file --file-path spy_1m.csv\n"
         ),
     )
@@ -101,12 +103,23 @@ def parse_args():
         help="Number of synthetic trading days to generate (default: 252).",
     )
     parser.add_argument(
+        "--interval",
+        default="1m",
+        metavar="INTERVAL",
+        help=(
+            "Bar interval – only used with --mode real.\n"
+            "Examples: 1m, 5m, 15m.  "
+            "yfinance limits: 1m→~30 days, 5m/15m→~60 days."
+        ),
+    )
+    parser.add_argument(
         "--period",
         default="30d",
         metavar="PERIOD",
         help=(
             "yfinance period string – only used with --mode real.\n"
-            "Examples: 7d, 14d, 30d.  Note: yfinance limits 1m history to ~30 days."
+            "Examples: 7d, 30d, 60d.  "
+            "For 5m/15m bars you can use up to 60d."
         ),
     )
     parser.add_argument(
@@ -154,9 +167,12 @@ def step_load_data(args):
         return load_synthetic(n_days=args.synth_days)
 
     elif args.mode == "real":
-        logger.info("=== STEP 1: Downloading SPY 1-min bars from yfinance ===")
+        logger.info(
+            "=== STEP 1: Downloading SPY %s bars from yfinance ===", args.interval
+        )
         return load_from_yfinance(
             period=args.period,
+            interval=args.interval,
             start=args.start,
             end=args.end,
         )
@@ -253,6 +269,7 @@ def main():
     if args.mode == "synthetic":
         logger.info("║  synth-days  : %-29s ║", args.synth_days)
     elif args.mode == "real":
+        logger.info("║  interval    : %-29s ║", args.interval)
         logger.info("║  period      : %-29s ║", args.period)
     logger.info("╚══════════════════════════════════════════════╝")
 

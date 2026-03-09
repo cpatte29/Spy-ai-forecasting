@@ -86,12 +86,16 @@ def load_from_yfinance(
     else:
         end_dt   = pd.Timestamp.today().normalize()
         # map period string to days
-        period_days = {"7d": 7, "30d": 30, "60d": 60, "1y": 365, "2y": 730}
+        period_days = {
+            "7d": 7, "14d": 14, "30d": 30, "60d": 60, "90d": 90,
+            "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730,
+        }
         days = period_days.get(period, 30)
         start_dt = end_dt - pd.Timedelta(days=days)
 
-    # yfinance 1m limit: 8 days per request; fetch in 7-day chunks to be safe
-    chunk_size = dt.timedelta(days=7)
+    # yfinance per-request limits: 1m→7 days, 5m/15m/30m→60 days, 1h→730 days
+    _chunk_days = {"1m": 7, "2m": 7, "5m": 59, "15m": 59, "30m": 59, "60m": 59, "1h": 59}
+    chunk_size = dt.timedelta(days=_chunk_days.get(interval, 7))
     frames = []
     chunk_start = start_dt
 
