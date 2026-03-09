@@ -96,6 +96,20 @@ def load_from_yfinance(
     # yfinance per-request limits: 1m→7 days, 5m/15m/30m→60 days, 1h→730 days
     _chunk_days = {"1m": 7, "2m": 7, "5m": 59, "15m": 59, "30m": 59, "60m": 59, "1h": 59}
     chunk_size = dt.timedelta(days=_chunk_days.get(interval, 7))
+
+    # yfinance absolute lookback limits: data older than this many calendar days
+    # cannot be fetched regardless of chunk size.  Clamp start_dt and warn early.
+    _max_lookback = {"1m": 30, "2m": 30, "5m": 60, "15m": 60, "30m": 60}
+    if interval in _max_lookback:
+        earliest_allowed = end_dt - pd.Timedelta(days=_max_lookback[interval] - 1)
+        if start_dt < earliest_allowed:
+            logger.warning(
+                "%s bars: yfinance limits history to %d calendar days. "
+                "Clamping start from %s → %s (requested period exceeds API limit).",
+                interval, _max_lookback[interval],
+                start_dt.date(), earliest_allowed.date(),
+            )
+            start_dt = earliest_allowed
     frames = []
     chunk_start = start_dt
 

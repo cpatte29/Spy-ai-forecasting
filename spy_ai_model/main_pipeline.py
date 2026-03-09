@@ -338,6 +338,22 @@ def main():
     logger.info("║  reg-preset  : %-29s ║", args.reg_preset)
     logger.info("╚══════════════════════════════════════════════╝")
 
+    # Warn early if requested period exceeds yfinance intraday lookback limits.
+    _yf_limits = {"5m": 60, "15m": 60, "30m": 60, "1m": 30, "2m": 30}
+    if args.mode == "real" and args.interval in _yf_limits:
+        _period_days = {
+            "7d": 7, "14d": 14, "30d": 30, "60d": 58, "90d": 88,
+            "1mo": 30, "3mo": 88, "6mo": 180, "1y": 365, "2y": 730,
+        }
+        req_days = _period_days.get(args.period, 0)
+        limit = _yf_limits[args.interval]
+        if req_days > limit:
+            logger.warning(
+                "yfinance limits %s bars to %d calendar days. "
+                "--period %s (%dd) will be silently clamped to %dd by the data loader.",
+                args.interval, limit, args.period, req_days, limit,
+            )
+
     # 1. Load / generate data
     df_raw = step_load_data(args)
     logger.info(
