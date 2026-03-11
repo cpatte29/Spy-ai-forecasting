@@ -29,7 +29,11 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from config import DIR_PROB_THRESHOLD
-from run_live_prediction import LIVE_DIR, run_live_prediction
+from run_live_prediction import (
+    DEFAULT_MIN_SESSION_BARS,
+    LIVE_DIR,
+    run_live_prediction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,7 @@ _CLOSE_CT = (15,  0)
 
 _CSV_FIELDS = [
     "generated_at_utc",
+    "now_et",
     "bar_timestamp",
     "ticker",
     "interval",
@@ -51,6 +56,9 @@ _CSV_FIELDS = [
     "predicted_range",
     "range_pts",
     "threshold",
+    "min_range",
+    "confidence_bucket",
+    "range_bucket",
     "signal",
     "session_bars",
 ]
@@ -120,10 +128,12 @@ def _append_to_log(result: dict) -> bool:
 # ── loop ──────────────────────────────────────────────────────────────────────
 
 def run_loop(
-    interval:      str   = "5m",
-    lookback_days: int   = 7,
-    threshold:     float = DIR_PROB_THRESHOLD,
-    poll_seconds:  int   = 300,
+    interval:         str   = "5m",
+    lookback_days:    int   = 7,
+    threshold:        float = DIR_PROB_THRESHOLD,
+    min_range:        float = 0.0,
+    min_session_bars: int   = DEFAULT_MIN_SESSION_BARS,
+    poll_seconds:     int   = 300,
 ) -> None:
     """
     Block indefinitely, running live predictions on each market-hours poll cycle.
@@ -132,8 +142,9 @@ def run_loop(
     promptly at open without spinning.
     """
     logger.info(
-        "SPY AI Live Loop started  |  interval=%s  threshold=%.3f  poll=%ds",
-        interval, threshold, poll_seconds,
+        "SPY AI Live Loop started  |  interval=%s  threshold=%.3f  "
+        "min_range=%.4f  min_session_bars=%d  poll=%ds",
+        interval, threshold, min_range, min_session_bars, poll_seconds,
     )
     logger.info("Prediction log → %s", PREDICTION_LOG)
 
@@ -151,6 +162,8 @@ def run_loop(
                 interval=interval,
                 lookback_days=lookback_days,
                 threshold=threshold,
+                min_range=min_range,
+                min_session_bars=min_session_bars,
             )
             written = _append_to_log(result)
             if written:
@@ -178,15 +191,19 @@ def _parse_args() -> argparse.Namespace:
         description="SPY AI continuous 5-minute live loop",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--interval",      default="5m",
+    p.add_argument("--interval",          default="5m",
                    help="Bar interval (must match model training interval)")
-    p.add_argument("--lookback-days", default=7, type=int,
+    p.add_argument("--lookback-days",     default=7, type=int,
                    help="Calendar days of history fetched per prediction")
-    p.add_argument("--threshold",     default=DIR_PROB_THRESHOLD, type=float,
-                   help="Entry probability threshold")
-    p.add_argument("--poll-seconds",  default=300, type=int,
+    p.add_argument("--threshold",         default=DIR_PROB_THRESHOLD, type=float,
+                   help="Direction probability threshold")
+    p.add_argument("--min-range",         default=0.0, type=float,
+                   help="Minimum predicted range for signal (0 = disabled)")
+    p.add_argument("--min-session-bars",  default=DEFAULT_MIN_SESSION_BARS, type=int,
+                   help="Minimum session bars before prediction is trusted")
+    p.add_argument("--poll-seconds",      default=300, type=int,
                    help="Seconds between prediction attempts (300 = 5 min)")
-    p.add_argument("--log-level",     default="INFO",
+    p.add_argument("--log-level",         default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
@@ -202,5 +219,7 @@ if __name__ == "__main__":
         interval=args.interval,
         lookback_days=args.lookback_days,
         threshold=args.threshold,
+        min_range=args.min_range,
+        min_session_bars=args.min_session_bars,
         poll_seconds=args.poll_seconds,
     )
