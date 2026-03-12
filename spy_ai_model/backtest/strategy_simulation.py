@@ -49,6 +49,7 @@ def run_backtest(
     threshold:     float = DIR_PROB_THRESHOLD,
     cost_bp:       float = TRANSACTION_COST_BP,
     hold_bars:     int   = HORIZON_DIR,
+    persist_n:     int   = 1,
 ) -> dict:
     """
     Parameters
@@ -59,6 +60,9 @@ def run_backtest(
     threshold     : minimum P(up) to enter a trade
     cost_bp       : one-way transaction cost in basis points
     hold_bars     : bars to hold each trade (should match horizon_dir)
+    persist_n     : number of consecutive bars that must all have prob >= threshold
+                    before a trade entry is triggered (default=1 = no filter).
+                    Set to 2 to require two consecutive confirming bars.
 
     Returns
     -------
@@ -71,9 +75,10 @@ def run_backtest(
 
     signals = pd.Series(oos_dir_proba, index=oos_index)
 
-    trades      = []
-    in_trade    = False
-    exit_time   = None
+    trades           = []
+    in_trade         = False
+    exit_time        = None
+    consecutive_hits = 0   # number of consecutive bars with prob >= threshold
 
     for ts, prob in signals.items():
         # Check if an open trade should be closed
@@ -89,12 +94,21 @@ def run_backtest(
                 "gross_pnl":  gross_pnl,
                 "net_pnl":    net_pnl,
             })
-            in_trade = False
+            in_trade         = False
+            consecutive_hits = 0   # reset after a trade completes
 
-        # Open new trade if signal is strong enough and not already in one
-        if (not in_trade) and (prob >= threshold):
+        # Track consecutive confirming bars (only while not in a trade)
+        if not in_trade:
+            if prob >= threshold:
+                consecutive_hits += 1
+            else:
+                consecutive_hits = 0
+
+        # Open new trade if persistence requirement is met and not already in one
+        if (not in_trade) and (consecutive_hits >= persist_n):
             entry_price = close_map.get(ts)
             if entry_price is None:
+                consecutive_hits = 0
                 continue
 
             # Compute exit time: hold_bars bars ahead in the OOS index
@@ -103,7 +117,8 @@ def run_backtest(
                 break   # not enough future bars
             exit_time = future_candidates[hold_bars - 1]
 
-            in_trade = True
+            in_trade         = True
+            consecutive_hits = 0   # reset – don't fire again until next streak
             trades.append({
                 "entry_time":  ts,
                 "entry_price": entry_price,

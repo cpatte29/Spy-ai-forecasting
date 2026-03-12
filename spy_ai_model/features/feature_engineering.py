@@ -17,6 +17,8 @@ Time          minutes_since_open, tod_sin, tod_cos
 Session       minutes_to_close, opening_range_high, opening_range_low,
               dist_orb_high, dist_orb_low, orb_break_flag, orb_reject_flag,
               power_hour_flag, lunch_hour_flag, day_of_week
+VWAP Regime   vwap_reclaim_flag, vwap_loss_flag, vwap_trend_strength,
+              vwap_distance_percentile
 """
 
 from __future__ import annotations
@@ -51,11 +53,40 @@ NEW_SESSION_FEATURES: list[str] = [
     "day_of_week",
 ]
 
+# VWAP regime features added on top of the 39-feature session-enhanced set.
+# Used by compare_vwap_persistence.py.
+NEW_VWAP_FEATURES: list[str] = [
+    "vwap_reclaim_flag",        # 1 on bars where price crosses back above VWAP
+    "vwap_loss_flag",           # 1 on bars where price crosses below VWAP
+    "vwap_trend_strength",      # rolling mean of sign(close-vwap), ranges −1…+1
+    "vwap_distance_percentile", # rolling %-rank of |dist_vwap| vs. recent history
+]
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
+
+
+def _rolling_percentile(series: pd.Series, window: int, min_periods: int | None = None) -> pd.Series:
+    """
+    Rolling percentile rank of the current value within its own look-back window.
+
+    For each bar, returns the fraction of the previous (window-1) values that are
+    strictly less than the current value.  Fully causal – uses only past data.
+
+    Returns values in [0, 1].  NaN when fewer than min_periods observations exist.
+    """
+    mp = min_periods if min_periods is not None else max(2, window // 2)
+
+    def _pct_rank(x: np.ndarray) -> float:
+        # x[-1] is the current bar; x[:-1] are the look-back values
+        if len(x) < 2:
+            return np.nan
+        return float((x[:-1] < x[-1]).mean())
+
+    return series.rolling(window, min_periods=mp).apply(_pct_rank, raw=True)
 
 
 def _log_ret(close: pd.Series, lag: int) -> pd.Series:
@@ -170,6 +201,31 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     vwap = _daily_vwap(df)
     feat["dist_vwap"]    = (close - vwap) / close
     feat["vwap_slope_5"] = (vwap - vwap.shift(5)) / close
+
+    # ── VWAP regime features ──────────────────────────────────────────────────
+    # Binary flag: price was below VWAP last bar and is above VWAP now (reclaim).
+    # Computed from the close-vs-vwap sign; NaN propagated when vwap is NaN.
+    above_vwap = (close > vwap).astype(float).where(vwap.notna(), np.nan)
+    feat["vwap_reclaim_flag"] = (
+        (above_vwap == 1.0) & (above_vwap.shift(1) == 0.0)
+    ).astype(float).where(vwap.notna() & vwap.shift(1).notna(), np.nan)
+
+    # Binary flag: price was above VWAP last bar and is below VWAP now (loss).
+    feat["vwap_loss_flag"] = (
+        (above_vwap == 0.0) & (above_vwap.shift(1) == 1.0)
+    ).astype(float).where(vwap.notna() & vwap.shift(1).notna(), np.nan)
+
+    # Trend strength: rolling mean of sign(close − vwap) over 10 bars.
+    # +1.0 = consistently above VWAP; −1.0 = consistently below.
+    vwap_sign = pd.Series(
+        np.where(close > vwap, 1.0, np.where(close < vwap, -1.0, 0.0)),
+        index=df.index,
+    ).where(vwap.notna(), np.nan)
+    feat["vwap_trend_strength"] = vwap_sign.rolling(10, min_periods=5).mean()
+
+    # Distance percentile: how extreme is the current |dist_vwap| vs. past 20 bars?
+    dist_vwap_abs = (close - vwap).abs() / close.where(close != 0, np.nan)
+    feat["vwap_distance_percentile"] = _rolling_percentile(dist_vwap_abs, window=20, min_periods=10)
 
     # ── Volatility ────────────────────────────────────────────────────────────
     log_ret_1 = _log_ret(close, 1)
