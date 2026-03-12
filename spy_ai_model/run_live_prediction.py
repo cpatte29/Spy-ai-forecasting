@@ -22,14 +22,22 @@ Improvements over v1
 
 Signal labels
 ─────────────
-  LONG_BIAS   P(up) >= threshold  AND  pred_range >= min_range
-  SHORT_BIAS  P(up) <= 1-threshold AND  pred_range >= min_range
+  LONG_BIAS   P(up) >= threshold  AND  pred_range >= range_gate
+  SHORT_BIAS  P(up) <= 1-threshold AND  pred_range >= range_gate
   NO_TRADE    anything else
+
+Range gate modes
+─────────────────
+  --min-range 0.003          fixed absolute threshold (legacy)
+  --range-percentile 0.60    load the 60th-pct threshold from
+                             models/saved/range_percentiles.json (calibrated
+                             from OOS predictions by compare_range_gates.py)
 
 Usage
 ─────
   python run_live_prediction.py
-  python run_live_prediction.py --threshold 0.528 --min-range 0.003
+  python run_live_prediction.py --threshold 0.55 --range-percentile 0.60
+  python run_live_prediction.py --min-range 0.003
   python run_live_prediction.py --min-session-bars 6   # early-session mode
 """
 
@@ -48,7 +56,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from config import DIR_PROB_THRESHOLD, HORIZON_DIR, TICKER
+from config import DIR_PROB_THRESHOLD, HORIZON_DIR, TICKER, MODEL_DIR
 from data.data_loader import load_from_yfinance
 from features.feature_engineering import build_features
 from models.train_direction import load_direction_model, predict_direction_proba
@@ -56,9 +64,10 @@ from models.train_range import load_range_model, predict_range
 
 logger = logging.getLogger(__name__)
 
-LIVE_DIR           = ROOT / "live_predictions"
-LATEST_SIGNAL_PATH = LIVE_DIR / "latest_signal.json"
-PAPER_TRADE_LOG    = LIVE_DIR / "paper_trade_log.csv"
+LIVE_DIR             = ROOT / "live_predictions"
+LATEST_SIGNAL_PATH   = LIVE_DIR / "latest_signal.json"
+PAPER_TRADE_LOG      = LIVE_DIR / "paper_trade_log.csv"
+RANGE_CALIBRATION    = MODEL_DIR / "range_percentiles.json"
 
 # ── session-bar threshold ─────────────────────────────────────────────────────
 # 12 bars × 5 min = 60 min  →  predictions start around 10:30 ET.
@@ -179,7 +188,43 @@ def _get_scored_bar_ts(df_raw: pd.DataFrame, interval: str) -> pd.Timestamp:
     return last_ts
 
 
-# ── 3. Signal + bucket helpers ────────────────────────────────────────────────
+# ── 3. Range-gate calibration loader ─────────────────────────────────────────
+
+def _load_range_gate(range_percentile: float, min_range: float) -> tuple[float, str]:
+    """
+    Resolve the effective min-range threshold and a human-readable label.
+
+    Priority:
+      1. range_percentile > 0  →  load absolute threshold from calibration file.
+      2. min_range > 0         →  use the fixed absolute value directly.
+      3. Both zero             →  no gate (return 0.0).
+
+    Returns (effective_threshold, gate_label).
+    """
+    if range_percentile > 0.0:
+        pct_key = str(int(range_percentile * 100))
+        if RANGE_CALIBRATION.exists():
+            try:
+                cal  = json.loads(RANGE_CALIBRATION.read_text())
+                thr  = float(cal["percentiles"].get(pct_key, 0.0))
+                if thr > 0.0:
+                    return thr, f"{int(range_percentile*100)}th-pct ({thr:.6f})"
+            except Exception as exc:
+                logger.warning("Could not read range calibration: %s", exc)
+        logger.warning(
+            "range_percentile=%.2f requested but no valid calibration found at %s. "
+            "Run compare_range_gates.py first. Falling back to no range gate.",
+            range_percentile, RANGE_CALIBRATION,
+        )
+        return 0.0, "none (calibration missing)"
+
+    if min_range > 0.0:
+        return min_range, f"fixed ({min_range:.6f})"
+
+    return 0.0, "none"
+
+
+# ── 4. Signal + bucket helpers ────────────────────────────────────────────────
 
 def _signal_label(
     prob:       float,
@@ -266,10 +311,11 @@ def _print_prediction(r: dict) -> None:
     print(f"  Confidence bucket    : {r['confidence_bucket']}")
     print(f"  Predicted range      : {r['predicted_range']:.4f}  ({r['range_pts']:.2f} pts)")
     print(f"  Range bucket         : {r['range_bucket']}")
-    min_r = r.get("min_range", 0.0)
-    if min_r > 0.0:
-        gate = "PASS" if r["predicted_range"] >= min_r else "FAIL"
-        print(f"  Min range gate       : {min_r:.4f}  → {gate}")
+    gate_thr   = r.get("effective_range_gate", r.get("min_range", 0.0))
+    gate_label = r.get("range_gate_label", "none")
+    if gate_thr > 0.0:
+        gate_pass = "PASS" if r["predicted_range"] >= gate_thr else "FAIL"
+        print(f"  Range gate           : {gate_label}  → {gate_pass}")
     print(dash)
     print(f"  Signal               : {r['signal']}")
     bar_mins    = _BAR_MINS.get(r.get("interval", "5m"), 5)
@@ -404,12 +450,13 @@ def _try_backfill(df_raw: pd.DataFrame, interval: str, horizon: int) -> int:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run_live_prediction(
-    interval:         str        = "5m",
-    lookback_days:    int        = 7,
-    threshold:        float | None = None,
-    min_range:        float      = 0.0,
-    min_session_bars: int        = DEFAULT_MIN_SESSION_BARS,
-    horizon:          int | None = None,
+    interval:          str         = "5m",
+    lookback_days:     int         = 7,
+    threshold:         float | None = None,
+    min_range:         float       = 0.0,
+    range_percentile:  float       = 0.0,
+    min_session_bars:  int         = DEFAULT_MIN_SESSION_BARS,
+    horizon:           int | None  = None,
 ) -> dict:
     """
     Fetch bars → build features → verify alignment → score last closed bar →
@@ -417,22 +464,25 @@ def run_live_prediction(
 
     Parameters
     ----------
-    interval         Bar interval string (must match model training, e.g. "5m").
-    lookback_days    Calendar days of history to fetch.  7 days is sufficient
-                     for all 5m features including EMA-200 warm-up.
-    threshold        Direction probability threshold.  Defaults to
-                     config.DIR_PROB_THRESHOLD.
-    min_range        Minimum predicted normalized range for a signal to be
-                     issued.  0.0 (default) disables the gate.
-    min_session_bars Minimum current-session bars required before a prediction
-                     is trusted.  Default 12 (≈ 60 min, ~10:30 ET).
-    horizon          Bars ahead used for realized-outcome backfill.  Defaults
-                     to config.HORIZON_DIR (60 bars for the saved models).
+    interval          Bar interval string (must match model training, e.g. "5m").
+    lookback_days     Calendar days of history to fetch.
+    threshold         Direction probability threshold (default: config value).
+    min_range         Fixed absolute minimum predicted range for a signal.
+                      0.0 disables.  Ignored when range_percentile > 0.
+    range_percentile  Percentile gate (e.g. 0.60 = 60th pct).  Loads the
+                      corresponding absolute threshold from
+                      models/saved/range_percentiles.json (written by
+                      compare_range_gates.py).  Takes priority over min_range.
+    min_session_bars  Minimum session bars before prediction is trusted.
+    horizon           Bars ahead for backfill (default: config.HORIZON_DIR).
     """
     if threshold is None:
         threshold = DIR_PROB_THRESHOLD
     if horizon is None:
         horizon = HORIZON_DIR
+
+    # Resolve the effective range gate (percentile overrides fixed min_range)
+    effective_range_gate, gate_label = _load_range_gate(range_percentile, min_range)
 
     # 1. Load models ──────────────────────────────────────────────────────────
     dir_model   = load_direction_model()
@@ -481,7 +531,7 @@ def run_live_prediction(
     dir_proba     = float(predict_direction_proba(dir_model,   latest_features)[0])
     pred_range    = float(predict_range(range_model, latest_features)[0])
     current_close = float(df_raw.iloc[scored_pos]["close"])
-    signal        = _signal_label(dir_proba, threshold, pred_range, min_range)
+    signal        = _signal_label(dir_proba, threshold, pred_range, effective_range_gate)
     conf_bucket   = _confidence_bucket(dir_proba)
     rng_bucket    = _range_bucket(pred_range)
     now_utc       = datetime.now(timezone.utc).isoformat()
@@ -497,21 +547,24 @@ def run_live_prediction(
     )
 
     result = {
-        "generated_at_utc":  now_utc,
-        "now_et":            now_et_str,
-        "bar_timestamp":     scored_ts.isoformat(),
-        "ticker":            TICKER,
-        "interval":          interval,
-        "current_close":     round(current_close, 4),
-        "dir_probability":   round(dir_proba, 6),
-        "predicted_range":   round(pred_range, 6),
-        "range_pts":         round(pred_range * current_close, 3),
-        "threshold":         threshold,
-        "min_range":         min_range,
-        "confidence_bucket": conf_bucket,
-        "range_bucket":      rng_bucket,
-        "signal":            signal,
-        "session_bars":      session_bars,
+        "generated_at_utc":    now_utc,
+        "now_et":              now_et_str,
+        "bar_timestamp":       scored_ts.isoformat(),
+        "ticker":              TICKER,
+        "interval":            interval,
+        "current_close":       round(current_close, 4),
+        "dir_probability":     round(dir_proba, 6),
+        "predicted_range":     round(pred_range, 6),
+        "range_pts":           round(pred_range * current_close, 3),
+        "threshold":           threshold,
+        "min_range":           min_range,
+        "range_percentile":    range_percentile,
+        "effective_range_gate": round(effective_range_gate, 8),
+        "range_gate_label":    gate_label,
+        "confidence_bucket":   conf_bucket,
+        "range_bucket":        rng_bucket,
+        "signal":              signal,
+        "session_bars":        session_bars,
     }
 
     # 8. Print ────────────────────────────────────────────────────────────────
@@ -523,7 +576,7 @@ def run_live_prediction(
     logger.info("Saved latest signal → %s", LATEST_SIGNAL_PATH)
 
     # 10. Paper-trade log + backfill ──────────────────────────────────────────
-    _append_paper_trade(result, min_range)
+    _append_paper_trade(result, effective_range_gate)
     backfilled = _try_backfill(df_raw, interval, horizon)
     if backfilled:
         print(f"  [paper trade] Backfilled {backfilled} row(s) with realized outcomes.")
@@ -552,7 +605,12 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--min-range", default=0.0, type=float,
-        help="Minimum predicted normalized range required for a signal (0 = disabled)",
+        help="Fixed absolute minimum predicted range (0 = disabled; ignored if --range-percentile set)",
+    )
+    p.add_argument(
+        "--range-percentile", default=0.0, type=float,
+        help="Percentile gate from calibration file (e.g. 0.60 = 60th pct). "
+             "Requires compare_range_gates.py to have been run first.",
     )
     p.add_argument(
         "--min-session-bars", default=DEFAULT_MIN_SESSION_BARS, type=int,
@@ -581,6 +639,7 @@ if __name__ == "__main__":
         lookback_days=args.lookback_days,
         threshold=args.threshold,
         min_range=args.min_range,
+        range_percentile=args.range_percentile,
         min_session_bars=args.min_session_bars,
         horizon=args.horizon,
     )

@@ -11,7 +11,7 @@ is logged and the loop continues rather than aborting.
 Usage
 -----
   python live_loop.py
-  python live_loop.py --threshold 0.528
+  python live_loop.py --threshold 0.55 --range-percentile 0.60
   python live_loop.py --poll-seconds 300 --log-level INFO
 """
 
@@ -57,6 +57,9 @@ _CSV_FIELDS = [
     "range_pts",
     "threshold",
     "min_range",
+    "range_percentile",
+    "effective_range_gate",
+    "range_gate_label",
     "confidence_bucket",
     "range_bucket",
     "signal",
@@ -128,12 +131,13 @@ def _append_to_log(result: dict) -> bool:
 # ── loop ──────────────────────────────────────────────────────────────────────
 
 def run_loop(
-    interval:         str   = "5m",
-    lookback_days:    int   = 7,
-    threshold:        float = DIR_PROB_THRESHOLD,
-    min_range:        float = 0.0,
-    min_session_bars: int   = DEFAULT_MIN_SESSION_BARS,
-    poll_seconds:     int   = 300,
+    interval:          str   = "5m",
+    lookback_days:     int   = 7,
+    threshold:         float = DIR_PROB_THRESHOLD,
+    min_range:         float = 0.0,
+    range_percentile:  float = 0.0,
+    min_session_bars:  int   = DEFAULT_MIN_SESSION_BARS,
+    poll_seconds:      int   = 300,
 ) -> None:
     """
     Block indefinitely, running live predictions on each market-hours poll cycle.
@@ -141,10 +145,14 @@ def run_loop(
     Outside market hours the loop sleeps 60 s between checks so it wakes up
     promptly at open without spinning.
     """
+    gate_desc = (
+        f"range_percentile={range_percentile}" if range_percentile > 0.0
+        else f"min_range={min_range:.4f}"
+    )
     logger.info(
         "SPY AI Live Loop started  |  interval=%s  threshold=%.3f  "
-        "min_range=%.4f  min_session_bars=%d  poll=%ds",
-        interval, threshold, min_range, min_session_bars, poll_seconds,
+        "%s  min_session_bars=%d  poll=%ds",
+        interval, threshold, gate_desc, min_session_bars, poll_seconds,
     )
     logger.info("Prediction log → %s", PREDICTION_LOG)
 
@@ -163,6 +171,7 @@ def run_loop(
                 lookback_days=lookback_days,
                 threshold=threshold,
                 min_range=min_range,
+                range_percentile=range_percentile,
                 min_session_bars=min_session_bars,
             )
             written = _append_to_log(result)
@@ -198,7 +207,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--threshold",         default=DIR_PROB_THRESHOLD, type=float,
                    help="Direction probability threshold")
     p.add_argument("--min-range",         default=0.0, type=float,
-                   help="Minimum predicted range for signal (0 = disabled)")
+                   help="Fixed absolute minimum predicted range (0 = disabled)")
+    p.add_argument("--range-percentile",  default=0.0, type=float,
+                   help="Percentile range gate from calibration file "
+                        "(e.g. 0.60). Requires compare_range_gates.py to have run.")
     p.add_argument("--min-session-bars",  default=DEFAULT_MIN_SESSION_BARS, type=int,
                    help="Minimum session bars before prediction is trusted")
     p.add_argument("--poll-seconds",      default=300, type=int,
@@ -220,6 +232,7 @@ if __name__ == "__main__":
         lookback_days=args.lookback_days,
         threshold=args.threshold,
         min_range=args.min_range,
+        range_percentile=args.range_percentile,
         min_session_bars=args.min_session_bars,
         poll_seconds=args.poll_seconds,
     )

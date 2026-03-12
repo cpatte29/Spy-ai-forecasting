@@ -43,51 +43,60 @@ logger = logging.getLogger(__name__)
 # ── core simulation ───────────────────────────────────────────────────────────
 
 def run_backtest(
-    df_raw:        pd.DataFrame,
-    oos_dir_proba: np.ndarray,
-    oos_index:     pd.DatetimeIndex,
-    threshold:     float = DIR_PROB_THRESHOLD,
-    cost_bp:       float = TRANSACTION_COST_BP,
-    hold_bars:     int   = HORIZON_DIR,
-    persist_n:     int   = 1,
+    df_raw:          pd.DataFrame,
+    oos_dir_proba:   np.ndarray,
+    oos_index:       pd.DatetimeIndex,
+    threshold:       float             = DIR_PROB_THRESHOLD,
+    cost_bp:         float             = TRANSACTION_COST_BP,
+    hold_bars:       int               = HORIZON_DIR,
+    persist_n:       int               = 1,
+    oos_range_pred:  np.ndarray | None = None,
+    range_threshold: float             = 0.0,
 ) -> dict:
     """
     Parameters
     ----------
-    df_raw        : full OHLCV DataFrame (used to look up exit prices)
-    oos_dir_proba : OOS predicted probabilities aligned with oos_index
-    oos_index     : DatetimeIndex of OOS rows
-    threshold     : minimum P(up) to enter a trade
-    cost_bp       : one-way transaction cost in basis points
-    hold_bars     : bars to hold each trade (should match horizon_dir)
-    persist_n     : number of consecutive bars that must all have prob >= threshold
-                    before a trade entry is triggered (default=1 = no filter).
-                    Set to 2 to require two consecutive confirming bars.
+    df_raw          : full OHLCV DataFrame (used to look up exit prices)
+    oos_dir_proba   : OOS predicted probabilities aligned with oos_index
+    oos_index       : DatetimeIndex of OOS rows
+    threshold       : minimum P(up) to enter a long trade
+    cost_bp         : one-way transaction cost in basis points
+    hold_bars       : bars to hold each trade (should match horizon_dir)
+    persist_n       : consecutive bars that must all pass both direction and
+                      range gates before an entry fires (default=1).
+    oos_range_pred  : OOS predicted ranges aligned with oos_index.
+                      When provided with range_threshold > 0, bars only count
+                      toward entry when their range also qualifies.
+    range_threshold : minimum predicted range for entry (0.0 = disabled).
+                      Typically a precomputed OOS percentile value.
 
     Returns
     -------
-    dict with trade log and summary statistics
+    dict with keys 'trades' (DataFrame) and 'summary' (dict of metrics).
     """
     cost_frac = cost_bp / 10_000.0
 
-    # Build lookup: datetime → close price
     close_map = df_raw["close"].to_dict()
+    signals   = pd.Series(oos_dir_proba, index=oos_index)
 
-    signals = pd.Series(oos_dir_proba, index=oos_index)
+    # Build optional range gate series
+    range_series: pd.Series | None = None
+    if oos_range_pred is not None and range_threshold > 0.0:
+        range_series = pd.Series(oos_range_pred, index=oos_index)
 
     trades           = []
     in_trade         = False
     exit_time        = None
-    consecutive_hits = 0   # number of consecutive bars with prob >= threshold
+    consecutive_hits = 0   # consecutive bars passing both gates
 
     for ts, prob in signals.items():
-        # Check if an open trade should be closed
+        # ── Close open trade when hold period expires ─────────────────────────
         if in_trade and ts >= exit_time:
             exit_price = close_map.get(ts) or close_map.get(
                 min(close_map.keys(), key=lambda k: abs((k - ts).total_seconds()))
             )
             gross_pnl  = (exit_price - entry_price) / entry_price
-            net_pnl    = gross_pnl - 2 * cost_frac   # pay cost on entry + exit
+            net_pnl    = gross_pnl - 2 * cost_frac
             trades[-1].update({
                 "exit_time":  ts,
                 "exit_price": exit_price,
@@ -95,36 +104,41 @@ def run_backtest(
                 "net_pnl":    net_pnl,
             })
             in_trade         = False
-            consecutive_hits = 0   # reset after a trade completes
+            consecutive_hits = 0
 
-        # Track consecutive confirming bars (only while not in a trade)
+        # ── Entry gate: direction + optional range ────────────────────────────
+        range_ok = (
+            range_series is None
+            or float(range_series[ts]) >= range_threshold
+        )
+
+        # Only bars passing BOTH gates count toward the persistence streak
         if not in_trade:
-            if prob >= threshold:
+            if prob >= threshold and range_ok:
                 consecutive_hits += 1
             else:
                 consecutive_hits = 0
 
-        # Open new trade if persistence requirement is met and not already in one
         if (not in_trade) and (consecutive_hits >= persist_n):
             entry_price = close_map.get(ts)
             if entry_price is None:
                 consecutive_hits = 0
                 continue
 
-            # Compute exit time: hold_bars bars ahead in the OOS index
             future_candidates = signals.index[signals.index > ts]
             if len(future_candidates) < hold_bars:
-                break   # not enough future bars
+                break
             exit_time = future_candidates[hold_bars - 1]
 
             in_trade         = True
-            consecutive_hits = 0   # reset – don't fire again until next streak
+            consecutive_hits = 0
             trades.append({
                 "entry_time":  ts,
                 "entry_price": entry_price,
                 "exit_time":   None,
                 "exit_price":  None,
                 "prob":        prob,
+                "pred_range":  float(range_series[ts]) if range_series is not None else None,
                 "gross_pnl":   None,
                 "net_pnl":     None,
             })
