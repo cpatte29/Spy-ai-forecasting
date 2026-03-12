@@ -30,6 +30,8 @@ RV_WINDOWS        = [5, 15, 30]
 RANGE_WINDOWS     = [5, 15]
 VOL_REL_WINDOWS   = [5, 15]
 ROLLING_HL_WINDOW = 15
+OPENING_RANGE_BARS = 6          # first N bars per session define the opening range
+                                # 6 × 5 min = 30-minute opening range for 5m bars
 
 # ── Walk-forward validation ───────────────────────────────────────────────────
 TRAIN_DAYS = 63     # ~3 calendar months of trading days

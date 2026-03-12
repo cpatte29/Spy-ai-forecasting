@@ -14,6 +14,9 @@ Candlestick   body_to_range, upper_wick_to_range, lower_wick_to_range, close_loc
 Volume        vol_rel_5, vol_rel_15
 Structure     rolling_high_15_dist, rolling_low_15_dist
 Time          minutes_since_open, tod_sin, tod_cos
+Session       minutes_to_close, opening_range_high, opening_range_low,
+              dist_orb_high, dist_orb_low, orb_break_flag, orb_reject_flag,
+              power_hour_flag, lunch_hour_flag, day_of_week
 """
 
 from __future__ import annotations
@@ -29,8 +32,24 @@ from config import (
     EMA_WINDOWS, SLOPE_LOOKBACK,
     RV_WINDOWS, RANGE_WINDOWS,
     VOL_REL_WINDOWS, ROLLING_HL_WINDOW,
-    MARKET_OPEN,
+    MARKET_OPEN, MARKET_CLOSE,
+    OPENING_RANGE_BARS,
 )
+
+# ── public constant: new features added in this module extension ───────────────
+# Used by compare_session_features.py to split baseline vs. enhanced sets.
+NEW_SESSION_FEATURES: list[str] = [
+    "minutes_to_close",
+    "opening_range_high",
+    "opening_range_low",
+    "dist_orb_high",
+    "dist_orb_low",
+    "orb_break_flag",
+    "orb_reject_flag",
+    "power_hour_flag",
+    "lunch_hour_flag",
+    "day_of_week",
+]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +84,45 @@ def _daily_vwap(df: pd.DataFrame) -> pd.Series:
     return cum_tpv / cum_vol.replace(0, np.nan)
 
 
+# ── Opening range (resets each day) ──────────────────────────────────────────
+
+def _opening_range(df: pd.DataFrame, n_bars: int) -> tuple[pd.Series, pd.Series]:
+    """
+    Compute the daily opening range high and low.
+
+    The opening range is defined by the first n_bars bars of each session.
+    This function is fully causal: bars within the first n_bars return NaN
+    (the ORB is still forming); bars from position n_bars onward receive the
+    completed ORB value.
+
+    Implementation uses a vectorised groupby + cummax/cummin approach:
+      1. Mask out bars outside the ORB window to NaN.
+      2. groupby(date).cummax() forward-fills the running extreme through NaN,
+         so post-ORB bars retain the final ORB value.
+      3. Mask out the ORB-window bars so the first n_bars per day are NaN.
+
+    Returns
+    -------
+    (orb_high, orb_low) : pd.Series, same index as df
+    """
+    date_key = df.index.normalize()
+    bar_num  = df.groupby(date_key).cumcount()   # 0-indexed position within day
+
+    # Within-window values; everything after → NaN
+    orb_h_raw = df["high"].where(bar_num < n_bars, np.nan)
+    orb_l_raw = df["low"].where(bar_num < n_bars, np.nan)
+
+    # cummax / cummin forward-fill through NaN (skipna=True is default)
+    orb_h_cummax = orb_h_raw.groupby(date_key).cummax()
+    orb_l_cummin = orb_l_raw.groupby(date_key).cummin()
+
+    # Expose only post-ORB bars (causal)
+    orb_h = orb_h_cummax.where(bar_num >= n_bars, np.nan)
+    orb_l = orb_l_cummin.where(bar_num >= n_bars, np.nan)
+
+    return orb_h, orb_l
+
+
 # ── main builder ──────────────────────────────────────────────────────────────
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -72,12 +130,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     Parameters
     ----------
     df : pd.DataFrame
-        1-minute OHLCV bars, DatetimeIndex, tz-naive, sorted ascending.
+        OHLCV bars with DatetimeIndex, tz-naive ET, sorted ascending.
 
     Returns
     -------
-    pd.DataFrame with one feature column per feature.  Rows at the start
-    of the series that can't be computed will be NaN (handled by caller).
+    pd.DataFrame with one column per feature.  Rows at the start of the
+    series that cannot be computed will be NaN (handled by the caller via
+    dropna in dataset_builder).
     """
     close  = df["close"]
     high   = df["high"]
@@ -138,9 +197,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat[f"rolling_low_{w}_dist"]  = (close - roll_low)  / close
 
     # ── Time features ─────────────────────────────────────────────────────────
-    open_minutes = int(MARKET_OPEN.split(":")[0]) * 60 + int(MARKET_OPEN.split(":")[1])
-    bar_minutes  = df.index.hour * 60 + df.index.minute
-    mins_since   = bar_minutes - open_minutes
+    open_minutes  = int(MARKET_OPEN.split(":")[0])  * 60 + int(MARKET_OPEN.split(":")[1])
+    close_minutes = int(MARKET_CLOSE.split(":")[0]) * 60 + int(MARKET_CLOSE.split(":")[1])
+    bar_minutes   = df.index.hour * 60 + df.index.minute
+    mins_since    = bar_minutes - open_minutes
 
     feat["minutes_since_open"] = pd.Series(mins_since, index=df.index)
 
@@ -148,6 +208,60 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     frac = mins_since / total_day_minutes
     feat["tod_sin"] = pd.Series(np.sin(2 * np.pi * frac), index=df.index)
     feat["tod_cos"] = pd.Series(np.cos(2 * np.pi * frac), index=df.index)
+
+    # ── Session-aware features ────────────────────────────────────────────────
+
+    # Minutes remaining in the session
+    feat["minutes_to_close"] = pd.Series(
+        close_minutes - bar_minutes, index=df.index, dtype=float
+    )
+
+    # Opening range (first OPENING_RANGE_BARS bars per session = 30 min for 5m)
+    orb_h, orb_l = _opening_range(df, OPENING_RANGE_BARS)
+
+    # Normalized ORB levels (ratio to current close)
+    # opening_range_high > 1.0 means ORB high is above current price
+    feat["opening_range_high"] = orb_h / close
+    feat["opening_range_low"]  = orb_l / close
+
+    # Signed distances: positive = price is below ORB high / above ORB low
+    feat["dist_orb_high"] = (orb_h - close) / close
+    feat["dist_orb_low"]  = (close - orb_l) / close
+
+    # Break flag: +1 close above ORB high, -1 close below ORB low, 0 inside
+    orb_break = np.where(
+        orb_h.isna(), np.nan,
+        np.where(close > orb_h,  1.0,
+        np.where(close < orb_l, -1.0,
+                 0.0))
+    )
+    feat["orb_break_flag"] = pd.Series(orb_break, index=df.index)
+
+    # Reject flag: wick tested an ORB level but close stayed inside the range
+    #   upper reject: high exceeded ORB high but close <= ORB high (false breakout up)
+    #   lower reject: low fell below ORB low but close >= ORB low (false breakout down)
+    upper_reject = (df["high"] > orb_h) & (close <= orb_h)
+    lower_reject = (df["low"]  < orb_l) & (close >= orb_l)
+    orb_reject   = np.where(
+        orb_h.isna(), np.nan,
+        (upper_reject | lower_reject).astype(float)
+    )
+    feat["orb_reject_flag"] = pd.Series(orb_reject, index=df.index)
+
+    # Power hour: last 60 min of the session (3:00–4:00 PM ET = 330–390 min since open)
+    feat["power_hour_flag"] = pd.Series(
+        (mins_since >= 330).astype(float), index=df.index
+    )
+
+    # Lunch lull: 11:30 AM – 1:00 PM ET (120–210 min since open)
+    feat["lunch_hour_flag"] = pd.Series(
+        ((mins_since >= 120) & (mins_since < 210)).astype(float), index=df.index
+    )
+
+    # Day of week: Monday=0, Tuesday=1, …, Friday=4
+    feat["day_of_week"] = pd.Series(
+        df.index.dayofweek.astype(float), index=df.index
+    )
 
     # ── Assemble ──────────────────────────────────────────────────────────────
     result = pd.DataFrame(feat, index=df.index)
