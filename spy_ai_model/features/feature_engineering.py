@@ -112,9 +112,15 @@ def _opening_range(df: pd.DataFrame, n_bars: int) -> tuple[pd.Series, pd.Series]
     orb_h_raw = df["high"].where(bar_num < n_bars, np.nan)
     orb_l_raw = df["low"].where(bar_num < n_bars, np.nan)
 
-    # cummax / cummin forward-fill through NaN (skipna=True is default)
+    # cummax / cummin gives the running extreme through bar n_bars-1, but
+    # pandas cummax/cummin does NOT forward-fill through NaN on its own.
+    # A subsequent groupby ffill() carries the last in-window value across all
+    # post-ORB bars within the same session.
     orb_h_cummax = orb_h_raw.groupby(date_key).cummax()
     orb_l_cummin = orb_l_raw.groupby(date_key).cummin()
+
+    orb_h_cummax = orb_h_cummax.groupby(date_key).ffill()
+    orb_l_cummin = orb_l_cummin.groupby(date_key).ffill()
 
     # Expose only post-ORB bars (causal)
     orb_h = orb_h_cummax.where(bar_num >= n_bars, np.nan)
