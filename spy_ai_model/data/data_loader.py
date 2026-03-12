@@ -84,7 +84,11 @@ def load_from_yfinance(
         start_dt = pd.Timestamp(start)
         end_dt   = pd.Timestamp(end)
     else:
-        end_dt   = pd.Timestamp.today().normalize()
+        # end_dt must be TOMORROW so that yfinance's exclusive `end=` parameter
+        # includes today's intraday bars.  Using .today().normalize() would set
+        # end="2026-03-12" which yfinance interprets as "fetch up to but NOT
+        # including 2026-03-12", silently dropping the entire current session.
+        end_dt   = pd.Timestamp.today().normalize() + pd.Timedelta(days=1)
         # map period string to days
         period_days = {
             "7d": 7, "14d": 14, "30d": 30, "60d": 58, "90d": 88,
