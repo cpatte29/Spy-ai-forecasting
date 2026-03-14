@@ -1,14 +1,27 @@
 """
 data_loader.py
 ──────────────
-Load SPY 1-minute OHLCV bars from:
-  • yfinance  (real data, requires internet)
+Load SPY OHLCV bars from:
+  • Polygon.io  (primary – requires POLYGON_API_KEY env var)
+  • yfinance    (fallback / research – no key required)
   • a local CSV/Parquet file
   • the synthetic generator
 
 Output is always a clean pd.DataFrame with columns
   open, high, low, close, volume
 indexed by a tz-naive DatetimeIndex limited to regular market hours.
+
+Provider-aware entry points (new)
+──────────────────────────────────
+  load_bars()       – select provider by name or auto-detect from env
+  get_provider()    – return a configured BaseProvider instance
+
+Legacy entry points (unchanged, still fully supported)
+───────────────────────────────────────────────────────
+  load_from_yfinance()  – direct yfinance download
+  load_from_file()      – local CSV / Parquet
+  load_synthetic()      – synthetic bar generator
+  save_bars()           – persist to DATA_DIR as Parquet
 """
 
 from __future__ import annotations
@@ -182,3 +195,83 @@ def save_bars(df: pd.DataFrame, name: str = "spy_1m") -> Path:
     df.to_parquet(out)
     logger.info("Saved %d bars to %s", len(df), out)
     return out
+
+
+# ── provider-aware API (new) ──────────────────────────────────────────────────
+
+def get_provider(name: str = "auto"):
+    """
+    Return a configured market data provider instance.
+
+    Parameters
+    ──────────
+    name  "auto"     – Polygon when POLYGON_API_KEY env var is set, else yfinance
+          "polygon"  – Polygon.io (requires POLYGON_API_KEY)
+          "yfinance" – yfinance (fallback / research)
+
+    Returns
+    ───────
+    BaseProvider subclass instance.
+
+    ⚠️  Never pass API keys as arguments – use the POLYGON_API_KEY env var.
+    """
+    from data.providers import get_provider as _factory
+    return _factory(name)
+
+
+def load_bars(
+    symbol:           str          = TICKER,
+    interval:         str          = "5m",
+    start:            Optional[str] = None,
+    end:              Optional[str] = None,
+    period:           Optional[str] = None,
+    lookback_days:    Optional[int] = None,
+    provider:         str          = "auto",
+    run_health_check: bool         = False,
+) -> pd.DataFrame:
+    """
+    Provider-aware bar loader.  Selects Polygon or yfinance based on the
+    `provider` argument (or the POLYGON_API_KEY env var when provider="auto").
+
+    All returned DataFrames have the standard project schema:
+        tz-naive ET DatetimeIndex, columns open/high/low/close/volume,
+        regular-session bars only, sorted ascending.
+
+    Parameters
+    ──────────
+    symbol           Ticker symbol (default: config.TICKER = "SPY").
+    interval         Bar size: "1m", "5m", "15m", "1h".
+    start            "YYYY-MM-DD" start date (optional).
+    end              "YYYY-MM-DD" end date (optional).
+    period           Period shorthand: "7d", "30d", "60d", "1y" (optional).
+    lookback_days    Calendar days to look back from today (optional).
+                     When provided, delegates to get_latest_stock_bars().
+    provider         "auto" | "polygon" | "yfinance".
+    run_health_check If True, prints a freshness / staleness diagnostic
+                     block after fetching. Useful in live-prediction mode.
+
+    Returns
+    ───────
+    pd.DataFrame – normalised OHLCV bars.
+
+    ⚠️  If POLYGON_API_KEY is not set and provider="auto", this falls back
+        to yfinance automatically.  Set the env var to use Polygon:
+          export POLYGON_API_KEY=<your_key>
+    """
+    p = get_provider(provider)
+
+    if lookback_days is not None:
+        df = p.get_latest_stock_bars(symbol, interval, lookback_days)
+    else:
+        df = p.get_stock_bars(symbol, interval, start=start, end=end, period=period)
+
+    if run_health_check:
+        health = p.print_health(symbol, interval, df)
+        if health.get("stale"):
+            logger.warning(
+                "Data is STALE (%s min since last bar). "
+                "Inference will use old bars – consider skipping this cycle.",
+                health.get("stale_minutes", "?"),
+            )
+
+    return df

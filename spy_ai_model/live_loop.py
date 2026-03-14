@@ -138,6 +138,7 @@ def run_loop(
     range_percentile:  float = 0.0,
     min_session_bars:  int   = DEFAULT_MIN_SESSION_BARS,
     poll_seconds:      int   = 300,
+    provider:          str   = "auto",
 ) -> None:
     """
     Block indefinitely, running live predictions on each market-hours poll cycle.
@@ -173,6 +174,7 @@ def run_loop(
                 min_range=min_range,
                 range_percentile=range_percentile,
                 min_session_bars=min_session_bars,
+                provider=provider,
             )
             written = _append_to_log(result)
             if written:
@@ -215,6 +217,13 @@ def _parse_args() -> argparse.Namespace:
                    help="Minimum session bars before prediction is trusted")
     p.add_argument("--poll-seconds",      default=300, type=int,
                    help="Seconds between prediction attempts (300 = 5 min)")
+    p.add_argument("--provider",          default="auto",
+                   choices=["auto", "polygon", "yfinance"],
+                   help=(
+                       "Market data provider: 'polygon' (Polygon.io, requires "
+                       "POLYGON_API_KEY), 'yfinance', or 'auto' (polygon when "
+                       "POLYGON_API_KEY is set, else yfinance)."
+                   ))
     p.add_argument("--log-level",         default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
@@ -235,4 +244,5 @@ if __name__ == "__main__":
         range_percentile=args.range_percentile,
         min_session_bars=args.min_session_bars,
         poll_seconds=args.poll_seconds,
+        provider=args.provider,
     )

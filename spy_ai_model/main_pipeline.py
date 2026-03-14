@@ -48,7 +48,7 @@ logger = logging.getLogger("main_pipeline")
 # ── project imports (after sys.path fix) ──────────────────────────────────────
 from config import REPORT_DIR, MODEL_DIR, DIRECTION_PARAMS_MODERATE, DIRECTION_PARAMS_CONSERVATIVE
 
-from data.data_loader import load_synthetic, load_from_yfinance, load_from_file
+from data.data_loader import load_synthetic, load_from_yfinance, load_from_file, load_bars
 from data.dataset_builder import build_dataset, split_features_labels
 from evaluation.walk_forward import walk_forward_cv
 from evaluation.metrics_report import generate_report
@@ -144,6 +144,19 @@ def parse_args():
         help="Path to a local CSV or Parquet file – only used with --mode file.",
     )
     parser.add_argument(
+        "--provider",
+        default="auto",
+        choices=["auto", "polygon", "yfinance"],
+        metavar="PROVIDER",
+        help=(
+            "Market data provider for --mode real.\n"
+            "  auto     – Polygon when POLYGON_API_KEY env var is set, else yfinance\n"
+            "  polygon  – Polygon.io (requires POLYGON_API_KEY)\n"
+            "  yfinance – yfinance fallback (default when no key is set)\n"
+            "Set the key with: export POLYGON_API_KEY=<your_key>"
+        ),
+    )
+    parser.add_argument(
         "--horizon-dir",
         type=int,
         default=None,
@@ -213,14 +226,17 @@ def step_load_data(args):
         return load_synthetic(n_days=args.synth_days)
 
     elif args.mode == "real":
+        provider = getattr(args, "provider", "auto")
         logger.info(
-            "=== STEP 1: Downloading SPY %s bars from yfinance ===", args.interval
+            "=== STEP 1: Downloading SPY %s bars (provider=%s) ===",
+            args.interval, provider,
         )
-        return load_from_yfinance(
-            period=args.period,
+        return load_bars(
             interval=args.interval,
             start=args.start,
             end=args.end,
+            period=args.period,
+            provider=provider,
         )
 
     elif args.mode == "file":
@@ -329,6 +345,7 @@ def main():
     elif args.mode == "real":
         logger.info("║  interval    : %-29s ║", args.interval)
         logger.info("║  period      : %-29s ║", args.period)
+        logger.info("║  provider    : %-29s ║", getattr(args, "provider", "auto"))
     if args.horizon_dir is not None:
         logger.info("║  horizon-dir : %-29s ║", args.horizon_dir)
     if args.horizon_range is not None:
@@ -339,8 +356,13 @@ def main():
     logger.info("╚══════════════════════════════════════════════╝")
 
     # Warn early if requested period exceeds yfinance intraday lookback limits.
+    # (Only relevant when provider resolves to yfinance.)
+    import os as _os
+    _effective_provider = getattr(args, "provider", "auto")
+    if _effective_provider == "auto" and not _os.environ.get("POLYGON_API_KEY"):
+        _effective_provider = "yfinance"
     _yf_limits = {"5m": 60, "15m": 60, "30m": 60, "1m": 30, "2m": 30}
-    if args.mode == "real" and args.interval in _yf_limits:
+    if args.mode == "real" and _effective_provider == "yfinance" and args.interval in _yf_limits:
         _period_days = {
             "7d": 7, "14d": 14, "30d": 30, "60d": 58, "90d": 88,
             "1mo": 30, "3mo": 88, "6mo": 180, "1y": 365, "2y": 730,
@@ -350,7 +372,8 @@ def main():
         if req_days > limit:
             logger.warning(
                 "yfinance limits %s bars to %d calendar days. "
-                "--period %s (%dd) will be silently clamped to %dd by the data loader.",
+                "--period %s (%dd) will be silently clamped to %dd by the data loader. "
+                "Use --provider polygon with POLYGON_API_KEY set for longer history.",
                 args.interval, limit, args.period, req_days, limit,
             )
 

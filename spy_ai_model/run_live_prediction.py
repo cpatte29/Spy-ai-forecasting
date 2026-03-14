@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from config import DIR_PROB_THRESHOLD, HORIZON_DIR, TICKER, MODEL_DIR
-from data.data_loader import load_from_yfinance
+from data.data_loader import load_from_yfinance, load_bars
 from features.feature_engineering import build_features
 from models.train_direction import load_direction_model, predict_direction_proba
 from models.train_range import load_range_model, predict_range
@@ -457,6 +457,7 @@ def run_live_prediction(
     range_percentile:  float       = 0.0,
     min_session_bars:  int         = DEFAULT_MIN_SESSION_BARS,
     horizon:           int | None  = None,
+    provider:          str         = "auto",
 ) -> dict:
     """
     Fetch bars → build features → verify alignment → score last closed bar →
@@ -489,13 +490,18 @@ def run_live_prediction(
     range_model = load_range_model()
 
     # 2. Fetch recent bars ────────────────────────────────────────────────────
-    df_raw = load_from_yfinance(
-        ticker=TICKER,
+    df_raw = load_bars(
+        symbol=TICKER,
         interval=interval,
-        period=f"{lookback_days}d",
+        lookback_days=lookback_days,
+        provider=provider,
+        run_health_check=True,   # prints provider / freshness diagnostics
     )
     if df_raw.empty:
-        raise RuntimeError("yfinance returned no bars for the requested period.")
+        raise RuntimeError(
+            f"Provider '{provider}' returned no bars for the requested period. "
+            "Check connectivity, API key, and market hours."
+        )
 
     # 3. Build features – identical call to training pipeline ─────────────────
     df_feat = build_features(df_raw)
@@ -621,6 +627,14 @@ def _parse_args() -> argparse.Namespace:
         help=f"Bars ahead for backfill (default: {HORIZON_DIR})",
     )
     p.add_argument(
+        "--provider", default="auto",
+        choices=["auto", "polygon", "yfinance"],
+        help=(
+            "Market data provider.  'auto' uses Polygon when POLYGON_API_KEY "
+            "is set, else yfinance.  Set POLYGON_API_KEY env var before use."
+        ),
+    )
+    p.add_argument(
         "--log-level", default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
@@ -642,6 +656,7 @@ if __name__ == "__main__":
         range_percentile=args.range_percentile,
         min_session_bars=args.min_session_bars,
         horizon=args.horizon,
+        provider=args.provider,
     )
 
 
