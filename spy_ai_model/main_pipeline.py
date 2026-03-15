@@ -49,6 +49,7 @@ logger = logging.getLogger("main_pipeline")
 from config import REPORT_DIR, MODEL_DIR, DIRECTION_PARAMS_MODERATE, DIRECTION_PARAMS_CONSERVATIVE
 
 from data.data_loader import load_synthetic, load_from_yfinance, load_from_file, load_bars
+from data.quality import validate_bars
 from data.dataset_builder import build_dataset, split_features_labels
 from evaluation.walk_forward import walk_forward_cv
 from evaluation.metrics_report import generate_report
@@ -261,6 +262,44 @@ def step_load_data(args):
         raise ValueError(f"Unknown mode: {args.mode}")
 
 
+def step_validate_data(df_raw: "pd.DataFrame", interval: str = "5m") -> None:
+    """
+    Run data quality validation on the raw bars and log/save the results.
+
+    Skipped silently for synthetic data (it's generated to be clean).
+    Writes timestamped session + bar CSVs to evaluation/reports/.
+    Logs an ERROR if critical issues are found but does not abort the
+    pipeline – a model trained on imperfect data is usually better than
+    no model at all.
+    """
+    import pandas as pd   # noqa: F401 – used only for the type hint above
+    logger.info("=== STEP 1b: Data quality validation (%s bars) ===", interval)
+    result = validate_bars(
+        df_raw,
+        interval     = interval,
+        symbol       = "SPY",
+        live         = False,
+        report_dir   = REPORT_DIR,
+        print_output = True,
+        compact      = False,
+    )
+    if result.critical > 0:
+        logger.error(
+            "Data quality: %d critical issue(s) detected. "
+            "Review the report before trusting model outputs.",
+            result.critical,
+        )
+    elif result.warnings > 0:
+        logger.warning(
+            "Data quality: %d warning(s) detected. "
+            "Check the sessions/bars report in %s.",
+            result.warnings,
+            REPORT_DIR,
+        )
+    else:
+        logger.info("Data quality: all checks passed.")
+
+
 def step_build_dataset(df_raw, horizon_dir=None, horizon_range=None):
     logger.info("=== STEP 2: Building features and labels ===")
     df_model = build_dataset(df_raw, horizon_dir=horizon_dir, horizon_range=horizon_range)
@@ -396,6 +435,10 @@ def main():
         df_raw.index[0].strftime("%Y-%m-%d"),
         df_raw.index[-1].strftime("%Y-%m-%d"),
     )
+
+    # 1b. Data quality validation (skipped for synthetic data)
+    if args.mode != "synthetic":
+        step_validate_data(df_raw, interval=getattr(args, "interval", "5m"))
 
     # 2. Features + labels
     df_model = step_build_dataset(df_raw, horizon_dir=args.horizon_dir, horizon_range=args.horizon_range)

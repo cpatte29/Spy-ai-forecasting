@@ -58,6 +58,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import DIR_PROB_THRESHOLD, HORIZON_DIR, TICKER, MODEL_DIR
 from data.data_loader import load_bars
+from data.quality import validate_bars
 from features.feature_engineering import build_features
 from models.train_direction import load_direction_model, predict_direction_proba
 from models.train_range import load_range_model, predict_range
@@ -501,6 +502,35 @@ def run_live_prediction(
         raise RuntimeError(
             f"Provider '{provider}' returned no bars for the requested period. "
             "Check connectivity, API key, and market hours."
+        )
+
+    # 2b. Live data quality check (compact – no file saved) ───────────────────
+    _qual = validate_bars(
+        df_raw,
+        interval     = interval,
+        symbol       = TICKER,
+        live         = True,
+        report_dir   = None,     # no file written during live inference
+        print_output = True,
+        compact      = True,     # only prints summary + critical lines
+    )
+    if _qual.critical > 0:
+        logger.error(
+            "Live data quality: %d critical issue(s) detected "
+            "(stale=%s, flagged_bars=%d, flagged_sessions=%d). "
+            "Prediction is issued but treat signal with caution.",
+            _qual.critical,
+            _qual.is_stale,
+            _qual.flagged_bars,
+            _qual.flagged_sessions,
+        )
+    elif _qual.warnings > 0:
+        logger.warning(
+            "Live data quality: %d warning(s) – "
+            "%d bar(s) flagged, %d session(s) flagged.",
+            _qual.warnings,
+            _qual.flagged_bars,
+            _qual.flagged_sessions,
         )
 
     # 3. Build features – identical call to training pipeline ─────────────────
