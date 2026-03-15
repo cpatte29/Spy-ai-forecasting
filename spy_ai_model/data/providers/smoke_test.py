@@ -15,6 +15,7 @@ Checks performed
   7. Row count / min timestamp / max timestamp printed.
   8. Last 5 rows printed.
   9. Data freshness check: latest bar is reported as today or labelled stale.
+     (Skipped for file provider – staleness is expected for historical files.)
  10. Feature pipeline can run on the fetched data without error.
 
 Usage
@@ -22,14 +23,17 @@ Usage
   # Auto provider (Polygon when POLYGON_API_KEY set, else yfinance):
   python data/providers/smoke_test.py
 
-  # Explicit provider:
+  # Explicit network provider:
   python data/providers/smoke_test.py --provider polygon
   python data/providers/smoke_test.py --provider yfinance
 
-  # Different symbol / interval:
+  # Local file provider:
+  python data/providers/smoke_test.py --provider file --file-path /path/to/spy_5m.csv
+
+  # Different symbol / interval / lookback:
   python data/providers/smoke_test.py --symbol SPY --interval 5m --days 5
 
-  # Show feature-pipeline output:
+  # Also run feature pipeline on the fetched data:
   python data/providers/smoke_test.py --run-features
 """
 
@@ -70,6 +74,7 @@ def run_smoke_test(
     interval:       str  = "5m",
     lookback_days:  int  = 5,
     run_features:   bool = False,
+    file_path:      str  = "",
 ) -> bool:
     """
     Run the full smoke test suite.
@@ -79,13 +84,18 @@ def run_smoke_test(
     sep  = "═" * 62
     dash = "─" * 62
 
+    is_file_provider = (provider_name == "file")
+
     print(sep)
     print(f"  SPY AI  –  Provider Smoke Test")
     print(sep)
     print(f"  Provider     : {provider_name}")
+    if is_file_provider:
+        print(f"  File path    : {file_path or '(not set)'}")
     print(f"  Symbol       : {symbol}")
     print(f"  Interval     : {interval}")
-    print(f"  Lookback     : {lookback_days} days")
+    if not is_file_provider:
+        print(f"  Lookback     : {lookback_days} days")
     print(dash)
 
     all_pass = True
@@ -94,19 +104,33 @@ def run_smoke_test(
     print("[ 1 ] Provider resolution")
     try:
         from data.providers import get_provider
-        provider = get_provider(provider_name)
+        kwargs = {}
+        if is_file_provider:
+            if not file_path:
+                print(f"{FAIL}  --file-path is required when --provider=file")
+                return False
+            kwargs["file_path"] = file_path
+        provider = get_provider(provider_name, **kwargs)
         print(f"{PASS}  Resolved provider: {provider.provider_name}")
     except Exception as exc:
         print(f"{FAIL}  Could not resolve provider: {exc}")
         return False
 
     # ── 2. Fetch bars ──────────────────────────────────────────────────────
-    print(f"[ 2 ] Fetching {symbol} {interval} bars ({lookback_days} days) …")
-    try:
-        df = provider.get_latest_stock_bars(symbol, interval, lookback_days)
-    except Exception as exc:
-        print(f"{FAIL}  Bar fetch raised: {exc}")
-        return False
+    if is_file_provider:
+        print(f"[ 2 ] Loading {symbol} {interval} bars from file …")
+        try:
+            df = provider.get_stock_bars(symbol, interval)
+        except Exception as exc:
+            print(f"{FAIL}  File load raised: {exc}")
+            return False
+    else:
+        print(f"[ 2 ] Fetching {symbol} {interval} bars ({lookback_days} days) …")
+        try:
+            df = provider.get_latest_stock_bars(symbol, interval, lookback_days)
+        except Exception as exc:
+            print(f"{FAIL}  Bar fetch raised: {exc}")
+            return False
 
     ok = _check(not df.empty, f"DataFrame is not empty ({len(df)} rows)")
     all_pass &= ok
@@ -163,11 +187,17 @@ def run_smoke_test(
 
     # ── 9. Freshness ───────────────────────────────────────────────────────
     print("[ 9 ] Data freshness")
-    try:
-        health = provider.print_health(symbol, interval, df)
-        all_pass &= not health["stale"]
-    except Exception as exc:
-        print(f"{WARN}  health_check raised: {exc}")
+    if is_file_provider:
+        print(f"{INFO}  Freshness check skipped for file provider "
+              "(historical files are intentionally stale).")
+        latest_ts = df.index.max()
+        print(f"{INFO}  File latest bar  : {latest_ts}")
+    else:
+        try:
+            health = provider.print_health(symbol, interval, df)
+            all_pass &= not health["stale"]
+        except Exception as exc:
+            print(f"{WARN}  health_check raised: {exc}")
 
     # ── 10. Feature pipeline ───────────────────────────────────────────────
     if run_features:
@@ -203,14 +233,19 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--provider",      default="auto",
-                   choices=["auto", "polygon", "yfinance"],
-                   help="Provider to test")
+                   choices=["auto", "polygon", "yfinance", "file"],
+                   help=(
+                       "Provider to test. "
+                       "Use 'file' with --file-path to test a local CSV/Parquet file."
+                   ))
+    p.add_argument("--file-path",     default="",
+                   help="Path to local CSV or Parquet file (required when --provider=file)")
     p.add_argument("--symbol",        default="SPY",
                    help="Ticker symbol to fetch")
     p.add_argument("--interval",      default="5m",
                    help="Bar interval: 1m, 5m, 15m")
     p.add_argument("--days",          default=5, type=int,
-                   help="Calendar days to look back")
+                   help="Calendar days to look back (ignored for file provider)")
     p.add_argument("--run-features",  action="store_true", default=False,
                    help="Also run build_features() on the fetched data")
     return p.parse_args()
@@ -224,5 +259,6 @@ if __name__ == "__main__":
         interval=args.interval,
         lookback_days=args.days,
         run_features=args.run_features,
+        file_path=args.file_path,
     )
     sys.exit(0 if passed else 1)

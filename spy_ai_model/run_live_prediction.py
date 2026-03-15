@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from config import DIR_PROB_THRESHOLD, HORIZON_DIR, TICKER, MODEL_DIR
-from data.data_loader import load_from_yfinance, load_bars
+from data.data_loader import load_bars
 from features.feature_engineering import build_features
 from models.train_direction import load_direction_model, predict_direction_proba
 from models.train_range import load_range_model, predict_range

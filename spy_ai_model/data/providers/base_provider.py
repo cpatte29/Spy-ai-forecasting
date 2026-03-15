@@ -202,44 +202,141 @@ class BaseProvider(ABC):
     def validate(df: pd.DataFrame, context: str = "") -> pd.DataFrame:
         """
         Apply standard validation rules to a normalised DataFrame.
-        Logs warnings; does not raise for recoverable issues.
 
-        Checks:
-          - required columns present
-          - no duplicate timestamps
-          - index is sorted ascending
-          - not empty
+        Checks (in order):
+          1. Not empty
+          2. Required columns present (open/high/low/close/volume)
+          3. Timezone consistency – index must be tz-naive ET; if tz-aware,
+             converts to ET and strips tz info with a warning.
+          4. Duplicate timestamps – deduplicates (keep first), logs count.
+          5. Sort order – re-sorts ascending if out of order.
+          6. NaN in OHLCV columns – logs count of affected rows.
+          7. Bar-gap detection – infers the bar interval from the data and
+             reports any intra-session gaps that suggest missing bars.
 
-        Returns the validated (potentially de-duplicated) DataFrame.
+        Logs warnings for recoverable issues; raises ValueError only for
+        unrecoverable schema errors (missing columns).
+
+        Returns the validated (and potentially de-duplicated / sorted)
+        DataFrame.
         """
         tag = f"[{context}] " if context else ""
 
+        # ── 1. Empty check ────────────────────────────────────────────────
         if df.empty:
             logger.warning("%sDataFrame is empty – no bars returned.", tag)
             return df
 
-        # required columns
+        # ── 2. Required columns ───────────────────────────────────────────
         missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
         if missing:
             raise ValueError(f"{tag}Missing required columns: {missing}")
 
-        # duplicate timestamps
+        # ── 3. Timezone consistency ───────────────────────────────────────
+        if df.index.tz is not None:
+            logger.warning(
+                "%sIndex is tz-aware (%s) – converting to tz-naive ET. "
+                "Providers should strip timezone before returning.",
+                tag, df.index.tz,
+            )
+            df = df.copy()
+            df.index = df.index.tz_convert("America/New_York").tz_localize(None)
+
+        # ── 4. Duplicate timestamps ───────────────────────────────────────
         n_dupes = df.index.duplicated().sum()
         if n_dupes:
-            logger.warning("%s%d duplicate timestamps – keeping first.", tag, n_dupes)
+            logger.warning(
+                "%s%d duplicate timestamp(s) – keeping first occurrence.",
+                tag, n_dupes,
+            )
             df = df[~df.index.duplicated(keep="first")]
 
-        # sort order
+        # ── 5. Sort order ─────────────────────────────────────────────────
         if not df.index.is_monotonic_increasing:
-            logger.warning("%sIndex is not sorted – sorting ascending.", tag)
+            logger.warning("%sIndex is not sorted ascending – re-sorting.", tag)
             df = df.sort_index()
 
-        # NaN check
+        # ── 6. NaN in OHLCV ──────────────────────────────────────────────
         nan_rows = df[REQUIRED_COLUMNS].isnull().any(axis=1).sum()
         if nan_rows:
-            logger.warning("%s%d rows have NaN in OHLCV columns.", tag, nan_rows)
+            logger.warning(
+                "%s%d row(s) have NaN in OHLCV columns.", tag, nan_rows,
+            )
+
+        # ── 7. Bar-gap detection ──────────────────────────────────────────
+        BaseProvider._check_bar_gaps(df, tag)
 
         return df
+
+    @staticmethod
+    def _check_bar_gaps(df: pd.DataFrame, log_tag: str = "") -> None:
+        """
+        Infer the bar interval and report intra-session gaps.
+
+        Algorithm
+        ─────────
+        1. Compute all consecutive time-deltas.
+        2. Filter out overnight gaps (> 1 hour) – these are expected.
+        3. Infer the "base interval" as the most common intra-session delta.
+        4. Flag any intra-session delta that is > 1.5× the base interval as a
+           gap, i.e. at least one bar is missing between those two timestamps.
+        5. Sum the excess time across all gaps to estimate the missing-bar count.
+
+        This is provider-agnostic: it works for any interval (1m, 5m, 15m, …)
+        without needing the interval to be passed in.
+
+        Logs a WARNING when gaps are found, DEBUG otherwise.
+        """
+        if len(df) < 3:
+            return
+
+        deltas = pd.Series(df.index).diff().dropna()
+
+        # Overnight / weekend gaps are expected – ignore anything > 90 min
+        # (longest normal session gap is the open itself: ~17.5 h)
+        intra = deltas[deltas <= pd.Timedelta(minutes=90)]
+
+        if intra.empty:
+            return
+
+        # Base interval = most frequent intra-session delta
+        base_interval = intra.mode().iloc[0]
+
+        # Gaps: consecutive deltas more than 1.5× the base interval
+        # (0.5 slack covers minor rounding differences in some feeds)
+        threshold = base_interval * 1.5
+        gaps      = intra[intra > threshold]
+
+        if gaps.empty:
+            logger.debug(
+                "%sBar-gap check OK  base_interval=%s  bars=%d",
+                log_tag, base_interval, len(df),
+            )
+            return
+
+        # Estimate missing bars: each gap contributes (gap / base - 1) missing bars
+        missing_bar_count = int(
+            round((gaps / base_interval - 1).clip(lower=0).sum())
+        )
+
+        # Find timestamps bracketing the largest single gap.
+        # gaps is a pd.Series whose index values are positional integers
+        # aligned with df.index[1:], so position N → df.index[N].
+        largest_gap_pos  = int(gaps.idxmax())
+        gap_start_ts     = df.index[largest_gap_pos - 1]
+        gap_end_ts       = df.index[largest_gap_pos]
+
+        logger.warning(
+            "%s%d intra-session gap(s) detected → ~%d missing bar(s)  "
+            "(base_interval=%s)  largest gap: %s → %s (%s)",
+            log_tag,
+            len(gaps),
+            missing_bar_count,
+            base_interval,
+            gap_start_ts,
+            gap_end_ts,
+            gaps.max(),
+        )
 
     # ── options scaffolding (placeholder) ─────────────────────────────────────
 

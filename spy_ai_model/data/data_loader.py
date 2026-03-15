@@ -4,22 +4,30 @@ data_loader.py
 Load SPY OHLCV bars from:
   • Polygon.io  (primary – requires POLYGON_API_KEY env var)
   • yfinance    (fallback / research – no key required)
-  • a local CSV/Parquet file
+  • a local CSV/Parquet file (via LocalFileProvider)
   • the synthetic generator
 
 Output is always a clean pd.DataFrame with columns
   open, high, low, close, volume
 indexed by a tz-naive DatetimeIndex limited to regular market hours.
 
-Provider-aware entry points (new)
-──────────────────────────────────
-  load_bars()       – select provider by name or auto-detect from env
+Provider-aware entry points
+───────────────────────────
+  load_bars()       – provider-agnostic loader; selects backend from env or args
   get_provider()    – return a configured BaseProvider instance
+
+Providers supported by load_bars()
+───────────────────────────────────
+  provider="auto"     → Polygon when POLYGON_API_KEY set, else yfinance
+  provider="polygon"  → Polygon.io (requires POLYGON_API_KEY)
+  provider="yfinance" → yfinance (research / fallback)
+  provider="file"     → local CSV / Parquet via LocalFileProvider
+                         requires: file_path=<str | Path>
 
 Legacy entry points (unchanged, still fully supported)
 ───────────────────────────────────────────────────────
   load_from_yfinance()  – direct yfinance download
-  load_from_file()      – local CSV / Parquet
+  load_from_file()      – local CSV / Parquet (thin wrapper, no provider layer)
   load_synthetic()      – synthetic bar generator
   save_bars()           – persist to DATA_DIR as Parquet
 """
@@ -199,7 +207,7 @@ def save_bars(df: pd.DataFrame, name: str = "spy_1m") -> Path:
 
 # ── provider-aware API (new) ──────────────────────────────────────────────────
 
-def get_provider(name: str = "auto"):
+def get_provider(name: str = "auto", **kwargs):
     """
     Return a configured market data provider instance.
 
@@ -208,6 +216,11 @@ def get_provider(name: str = "auto"):
     name  "auto"     – Polygon when POLYGON_API_KEY env var is set, else yfinance
           "polygon"  – Polygon.io (requires POLYGON_API_KEY)
           "yfinance" – yfinance (fallback / research)
+          "file"     – local CSV / Parquet file
+                       requires: file_path=<str | Path>
+
+    **kwargs
+          file_path  Path to data file – required when name="file".
 
     Returns
     ───────
@@ -216,26 +229,31 @@ def get_provider(name: str = "auto"):
     ⚠️  Never pass API keys as arguments – use the POLYGON_API_KEY env var.
     """
     from data.providers import get_provider as _factory
-    return _factory(name)
+    return _factory(name, **kwargs)
 
 
 def load_bars(
-    symbol:           str          = TICKER,
-    interval:         str          = "5m",
+    symbol:           str           = TICKER,
+    interval:         str           = "5m",
     start:            Optional[str] = None,
     end:              Optional[str] = None,
     period:           Optional[str] = None,
     lookback_days:    Optional[int] = None,
-    provider:         str          = "auto",
-    run_health_check: bool         = False,
+    provider:         str           = "auto",
+    file_path:        Optional[str] = None,
+    run_health_check: bool          = False,
 ) -> pd.DataFrame:
     """
-    Provider-aware bar loader.  Selects Polygon or yfinance based on the
-    `provider` argument (or the POLYGON_API_KEY env var when provider="auto").
+    Provider-agnostic bar loader.
 
-    All returned DataFrames have the standard project schema:
-        tz-naive ET DatetimeIndex, columns open/high/low/close/volume,
-        regular-session bars only, sorted ascending.
+    Selects the backend from the ``provider`` argument (or POLYGON_API_KEY
+    env var when provider="auto") and returns a normalised OHLCV DataFrame
+    using the project-standard schema regardless of the data source.
+
+    All returned DataFrames have:
+        • tz-naive ET DatetimeIndex, sorted ascending
+        • columns: open / high / low / close / volume
+        • regular market-session bars only (09:30 – 16:00 ET)
 
     Parameters
     ──────────
@@ -244,21 +262,33 @@ def load_bars(
     start            "YYYY-MM-DD" start date (optional).
     end              "YYYY-MM-DD" end date (optional).
     period           Period shorthand: "7d", "30d", "60d", "1y" (optional).
-    lookback_days    Calendar days to look back from today (optional).
+    lookback_days    Calendar days to look back from today / file anchor.
                      When provided, delegates to get_latest_stock_bars().
-    provider         "auto" | "polygon" | "yfinance".
+    provider         "auto"     – Polygon when POLYGON_API_KEY set, else yfinance
+                     "polygon"  – Polygon.io (requires POLYGON_API_KEY)
+                     "yfinance" – yfinance (research / fallback)
+                     "file"     – local CSV / Parquet (requires file_path)
+    file_path        Path to local file.  Required when provider="file".
+                     Also accepted as the sole positional-style hint when
+                     provider is not explicitly "file" but file_path is given
+                     (treats it as provider="file" automatically).
     run_health_check If True, prints a freshness / staleness diagnostic
-                     block after fetching. Useful in live-prediction mode.
+                     block after fetching.  Useful in live-prediction mode.
 
     Returns
     ───────
     pd.DataFrame – normalised OHLCV bars.
 
-    ⚠️  If POLYGON_API_KEY is not set and provider="auto", this falls back
-        to yfinance automatically.  Set the env var to use Polygon:
+    ⚠️  If POLYGON_API_KEY is not set and provider="auto", falls back to
+        yfinance automatically.  Set the env var to use Polygon:
           export POLYGON_API_KEY=<your_key>
     """
-    p = get_provider(provider)
+    # Convenience: if file_path is given without explicit provider="file",
+    # treat it as file mode so callers don't need to spell out both.
+    if file_path is not None and provider == "auto":
+        provider = "file"
+
+    p = get_provider(provider, file_path=file_path)
 
     if lookback_days is not None:
         df = p.get_latest_stock_bars(symbol, interval, lookback_days)

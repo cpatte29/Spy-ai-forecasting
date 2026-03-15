@@ -153,7 +153,8 @@ def parse_args():
             "  auto     – Polygon when POLYGON_API_KEY env var is set, else yfinance\n"
             "  polygon  – Polygon.io (requires POLYGON_API_KEY)\n"
             "  yfinance – yfinance fallback (default when no key is set)\n"
-            "Set the key with: export POLYGON_API_KEY=<your_key>"
+            "For --mode file use --file-path; the file provider is selected automatically.\n"
+            "Set the Polygon key with: export POLYGON_API_KEY=<your_key>"
         ),
     )
     parser.add_argument(
@@ -243,8 +244,18 @@ def step_load_data(args):
         if not args.file_path:
             logger.error("--file-path is required when --mode=file")
             sys.exit(1)
-        logger.info("=== STEP 1: Loading bars from %s ===", args.file_path)
-        return load_from_file(args.file_path)
+        logger.info(
+            "=== STEP 1: Loading bars from local file (provider=file) ===\n"
+            "  path: %s",
+            args.file_path,
+        )
+        # Route through the provider layer so the file gets the same
+        # validation, gap detection, and normalisation as live providers.
+        return load_bars(
+            provider="file",
+            file_path=args.file_path,
+            interval=getattr(args, "interval", "5m"),
+        )
 
     else:
         raise ValueError(f"Unknown mode: {args.mode}")
