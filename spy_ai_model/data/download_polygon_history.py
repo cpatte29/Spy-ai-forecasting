@@ -210,9 +210,38 @@ def _fetch(symbol: str, interval: str, start: str | None,
 
 
 def _save(df: pd.DataFrame, path: Path) -> None:
-    """Save DataFrame to Parquet, creating parent directories if needed."""
+    """
+    Save DataFrame to Parquet, falling back to CSV if pyarrow is not installed.
+
+    Parquet is strongly preferred: it preserves the DatetimeIndex dtype exactly,
+    stores float64 columns without precision loss, and loads ~10× faster than CSV
+    for large files.  Install pyarrow to enable Parquet support:
+
+        pip install pyarrow
+
+    If neither pyarrow nor fastparquet is available the file is saved as
+    gzip-compressed CSV (.csv.gz) with the same base name.  The modeling
+    pipeline's LocalFileProvider can load both formats transparently.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=True)
+
+    if path.suffix in (".parquet", ".pq"):
+        try:
+            df.to_parquet(path, index=True)
+        except ImportError:
+            # pyarrow / fastparquet not installed — fall back to compressed CSV
+            csv_path = path.with_suffix(".csv.gz")
+            logger.warning(
+                "pyarrow is not installed — Parquet not available.\n"
+                "  Falling back to gzip-compressed CSV: %s\n"
+                "  To enable Parquet (recommended): pip install pyarrow",
+                csv_path,
+            )
+            df.to_csv(csv_path, index=True, compression="gzip")
+            path = csv_path
+    else:
+        df.to_csv(path, index=True)
+
     size_mb = path.stat().st_size / 1_048_576
     logger.info("Saved %d bars → %s  (%.2f MB)", len(df), path, size_mb)
 

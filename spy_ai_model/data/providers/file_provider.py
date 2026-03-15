@@ -219,17 +219,22 @@ class LocalFileProvider(BaseProvider):
         ValueError   – unsupported file format, missing required columns.
         """
         path = self._file_path
-        suffix = path.suffix.lower()
+        # Use full filename to detect compound extensions (.csv.gz, .csv.bz2)
+        name_lower = path.name.lower()
+        suffix     = path.suffix.lower()
 
         # ── Read raw file ──────────────────────────────────────────────────
         if suffix in (".parquet", ".pq"):
             df = pd.read_parquet(path)
         elif suffix in (".csv", ".txt"):
             df = self._read_csv(path)
+        elif name_lower.endswith((".csv.gz", ".csv.bz2", ".csv.xz", ".txt.gz")):
+            # pandas read_csv infers compression from the extension automatically
+            df = self._read_csv(path)
         else:
             raise ValueError(
                 f"LocalFileProvider: unsupported format '{path.suffix}'. "
-                "Accepted: .csv  .txt  .parquet  .pq"
+                "Accepted: .csv  .txt  .csv.gz  .parquet  .pq"
             )
 
         # ── Ensure DatetimeIndex ───────────────────────────────────────────
