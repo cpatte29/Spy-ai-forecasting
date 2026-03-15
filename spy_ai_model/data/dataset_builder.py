@@ -28,6 +28,7 @@ def build_dataset(
     horizon_dir: int | None = None,
     horizon_range: int | None = None,
     horizon: int | None = None,
+    include_gap_features: bool = True,
 ) -> pd.DataFrame:
     """
     Parameters
@@ -41,6 +42,9 @@ def build_dataset(
         Bars ahead for the range label (overrides config.HORIZON_RANGE).
     horizon : int or None
         Legacy shorthand – sets both horizons when provided.
+    include_gap_features : bool, default True
+        Pass False to exclude the 9 overnight-gap / prior-day context features.
+        Used by compare_gap_features.py to run a clean A/B comparison.
 
     Returns
     -------
@@ -50,7 +54,7 @@ def build_dataset(
         Index  : original DatetimeIndex (subset of df_raw).
     """
     logger.info("Building features from %d raw bars …", len(df_raw))
-    df_feat = build_features(df_raw)
+    df_feat = build_features(df_raw, include_gap_features=include_gap_features)
 
     logger.info("Building labels …")
     df_lab  = build_labels(df_raw, horizon_dir=horizon_dir, horizon_range=horizon_range, horizon=horizon)

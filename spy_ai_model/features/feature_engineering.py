@@ -19,6 +19,9 @@ Session       minutes_to_close, opening_range_high, opening_range_low,
               power_hour_flag, lunch_hour_flag, day_of_week
 VWAP Regime   vwap_reclaim_flag, vwap_loss_flag, vwap_trend_strength,
               vwap_distance_percentile
+Gap / Prior   overnight_gap_pct, dist_prior_high, dist_prior_low,
+              dist_prior_close, prior_day_range, prior_day_trend,
+              opened_in_prior_range, prior_close_reclaimed, gap_fill_pct
 """
 
 from __future__ import annotations
@@ -60,6 +63,20 @@ NEW_VWAP_FEATURES: list[str] = [
     "vwap_loss_flag",           # 1 on bars where price crosses below VWAP
     "vwap_trend_strength",      # rolling mean of sign(close-vwap), ranges −1…+1
     "vwap_distance_percentile", # rolling %-rank of |dist_vwap| vs. recent history
+]
+
+# Overnight-gap and prior-day context features.
+# Used by compare_gap_features.py to isolate the lift from this feature group.
+NEW_GAP_FEATURES: list[str] = [
+    "overnight_gap_pct",        # (session_open − prior_close) / prior_close; constant per session
+    "dist_prior_high",          # (close − prior_high) / close; positive = above prior high
+    "dist_prior_low",           # (close − prior_low)  / close; positive = above prior low
+    "dist_prior_close",         # (close − prior_close) / close; signed distance from prior close
+    "prior_day_range",          # (prior_high − prior_low) / prior_close; constant per session
+    "prior_day_trend",          # +1 prior day bullish, −1 bearish, 0 flat; constant per session
+    "opened_in_prior_range",    # 1 if session open was inside prior (low, high); constant per session
+    "prior_close_reclaimed",    # 1 if current close ≥ prior close; dynamic per bar
+    "gap_fill_pct",             # fraction of overnight gap recovered (0=none, 1=full); dynamic
 ]
 
 
@@ -160,14 +177,143 @@ def _opening_range(df: pd.DataFrame, n_bars: int) -> tuple[pd.Series, pd.Series]
     return orb_h, orb_l
 
 
+# ── Prior day context ─────────────────────────────────────────────────────────
+
+def _prior_day_context(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """
+    Compute 9 overnight-gap and prior-day reference-level features.
+
+    All features are strictly causal: they use only data from the prior
+    calendar session (which closed before today's open).  The first calendar
+    day in df will have NaN values for all 9 outputs — downstream dropna()
+    removes those rows automatically.
+
+    Per-session constants (same value for every bar in a given day)
+    ───────────────────────────────────────────────────────────────
+    overnight_gap_pct     (session_open − prior_close) / prior_close
+                          Positive = gap up; negative = gap down.
+
+    prior_day_range       (prior_high − prior_low) / prior_close
+                          Normalised prior-session price range.
+
+    prior_day_trend       +1 prior day bullish (close > open)
+                          −1 prior day bearish
+                           0 flat
+
+    opened_in_prior_range 1 if today's session open ∈ [prior_low, prior_high]
+                          0 if the session opened with a true gap outside the
+                          prior range.
+
+    Per-bar variables (change each bar as price moves)
+    ───────────────────────────────────────────────────
+    dist_prior_high       (close − prior_high) / close
+                          Positive = above prior high (breakout).
+                          Negative = below prior high (resistance overhead).
+
+    dist_prior_low        (close − prior_low) / close
+                          Positive = above prior low (support intact).
+                          Negative = below prior low (breakdown).
+
+    dist_prior_close      (close − prior_close) / close
+                          Signed distance from the prior close reference.
+
+    prior_close_reclaimed 1 if current close ≥ prior close; 0 otherwise.
+                          Turns on once price reclaims that level intraday.
+
+    gap_fill_pct          Fraction of the overnight gap recovered so far.
+                          Formula: (close − session_open) / (prior_close − session_open)
+                            0 = price is still at the session open (no fill)
+                            1 = price has returned to prior close (fully filled)
+                          Positive values mean filling a gap-up (price drifted down).
+                          Negative values mean the gap is extending.
+                          Clamped to [−2, 2]; set to 0 when gap ≈ 0.
+    """
+    close    = df["close"]
+    date_key = df.index.normalize()   # DatetimeIndex of each bar's calendar date
+
+    # ── Daily aggregates (indexed by calendar date) ───────────────────────────
+    grp          = df.groupby(date_key)
+    daily_high   = grp["high"].max()
+    daily_low    = grp["low"].min()
+    daily_close  = grp["close"].last()
+    daily_open   = grp["open"].first()   # session open price
+
+    # ── Prior-day shift (index = current date, value = prior date's stat) ─────
+    prior_high   = daily_high.shift(1)
+    prior_low    = daily_low.shift(1)
+    prior_close  = daily_close.shift(1)
+    prior_open   = daily_open.shift(1)
+
+    # ── Broadcast daily → bar level ───────────────────────────────────────────
+    def _to_bar(daily: pd.Series) -> pd.Series:
+        """Map a date-indexed daily series onto the bar-level DatetimeIndex."""
+        return pd.Series(daily.reindex(date_key).values, index=df.index)
+
+    pc  = _to_bar(prior_close)   # prior close at bar level
+    ph  = _to_bar(prior_high)    # prior high  at bar level
+    pl  = _to_bar(prior_low)     # prior low   at bar level
+    po  = _to_bar(prior_open)    # prior open  at bar level
+    so  = _to_bar(daily_open)    # today's session open at bar level
+
+    # Avoid division by zero
+    c_safe  = close.replace(0, np.nan)
+    pc_safe = pc.replace(0, np.nan)
+
+    feat: dict[str, pd.Series] = {}
+
+    # 1. overnight_gap_pct – fraction of prior close                  [constant/session]
+    feat["overnight_gap_pct"] = (so - pc) / pc_safe
+
+    # 2. dist_prior_high – signed distance to prior high              [dynamic/bar]
+    feat["dist_prior_high"] = (close - ph) / c_safe
+
+    # 3. dist_prior_low – signed distance to prior low                [dynamic/bar]
+    feat["dist_prior_low"] = (close - pl) / c_safe
+
+    # 4. dist_prior_close – signed distance to prior close            [dynamic/bar]
+    feat["dist_prior_close"] = (close - pc) / c_safe
+
+    # 5. prior_day_range – normalised prior session range             [constant/session]
+    feat["prior_day_range"] = (ph - pl) / pc_safe
+
+    # 6. prior_day_trend – directional bias of prior session          [constant/session]
+    #    Re-index onto date_key so we can broadcast through _to_bar.
+    prior_trend_daily = pd.Series(
+        np.sign((prior_close - prior_open).values).astype(float),
+        index=daily_close.index,
+    )
+    feat["prior_day_trend"] = _to_bar(prior_trend_daily)
+
+    # 7. opened_in_prior_range – gap flag                             [constant/session]
+    in_range = ((so >= pl) & (so <= ph)).astype(float)
+    feat["opened_in_prior_range"] = in_range.where(ph.notna() & pl.notna(), np.nan)
+
+    # 8. prior_close_reclaimed – has price retaken the prior close?   [dynamic/bar]
+    feat["prior_close_reclaimed"] = (close >= pc).astype(float).where(pc.notna(), np.nan)
+
+    # 9. gap_fill_pct – fraction of overnight gap recovered           [dynamic/bar]
+    #    denom = prior_close − session_open  (= −gap_size)
+    #    → 0 when close == session_open (no move from open)
+    #    → 1 when close == prior_close  (full fill)
+    #    fillna(0) when gap ≈ 0 (avoid division by ~0 noise)
+    denom = (pc - so).replace(0, np.nan)
+    feat["gap_fill_pct"] = ((close - so) / denom).clip(-2.0, 2.0).fillna(0.0)
+
+    return feat
+
+
 # ── main builder ──────────────────────────────────────────────────────────────
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, include_gap_features: bool = True) -> pd.DataFrame:
     """
     Parameters
     ----------
     df : pd.DataFrame
         OHLCV bars with DatetimeIndex, tz-naive ET, sorted ascending.
+    include_gap_features : bool, default True
+        When True (default), appends the 9 overnight-gap / prior-day context
+        features from NEW_GAP_FEATURES.  Pass False to reproduce the baseline
+        43-feature set for A/B comparisons.
 
     Returns
     -------
@@ -324,6 +470,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["day_of_week"] = pd.Series(
         df.index.dayofweek.astype(float), index=df.index
     )
+
+    # ── Overnight gap / prior-day context features (optional) ────────────────
+    if include_gap_features:
+        feat.update(_prior_day_context(df))
 
     # ── Assemble ──────────────────────────────────────────────────────────────
     result = pd.DataFrame(feat, index=df.index)
