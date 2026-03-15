@@ -238,16 +238,20 @@ class PolygonProvider(BaseProvider):
             logger.error("Polygon official client error: %s", exc)
             raise
 
-        # Convert Agg objects to plain dicts for uniform downstream handling
+        # Convert Agg objects to plain dicts for uniform downstream handling.
+        # vwap (vw) and transactions (n) are preserved as extra columns; they
+        # are not required by REQUIRED_COLUMNS but are stored in raw parquet.
         results: list[dict] = []
         for agg in aggs:
             results.append({
-                "o": getattr(agg, "open",   None),
-                "h": getattr(agg, "high",   None),
-                "l": getattr(agg, "low",    None),
-                "c": getattr(agg, "close",  None),
-                "v": getattr(agg, "volume", None),
-                "t": getattr(agg, "timestamp", None),
+                "o":  getattr(agg, "open",         None),
+                "h":  getattr(agg, "high",         None),
+                "l":  getattr(agg, "low",          None),
+                "c":  getattr(agg, "close",        None),
+                "v":  getattr(agg, "volume",       None),
+                "vw": getattr(agg, "vwap",         None),
+                "n":  getattr(agg, "transactions", None),
+                "t":  getattr(agg, "timestamp",    None),
             })
         return results
 
@@ -332,15 +336,36 @@ class PolygonProvider(BaseProvider):
     @staticmethod
     def _normalise(results: list[dict]) -> pd.DataFrame:
         """
-        Convert raw Polygon aggregate result dicts to the project-standard DataFrame.
+        Convert raw Polygon aggregate result dicts to a project-compatible DataFrame.
 
-        Polygon field mapping:
-          t  → timestamp (ms since Unix epoch, UTC)
+        Polygon field mapping
+        ─────────────────────
+          t  → timestamp (ms since Unix epoch, UTC) → tz-naive ET index
           o  → open
           h  → high
           l  → low
           c  → close
           v  → volume
+          vw → vwap         (volume-weighted average price; optional extra column)
+          n  → transactions (trade count per bar;          optional extra column)
+
+        Timestamp storage
+        ─────────────────
+          Polygon sends Unix milliseconds in UTC.  This method converts them to
+          America/New_York (ET) and then strips the timezone info, producing the
+          tz-naive ET DatetimeIndex the rest of the project expects.
+
+          All timestamps in the returned DataFrame — and in the Parquet files
+          written by download_polygon_history.py — are therefore in Eastern Time
+          (ET), tz-naive.  E.g. 2024-01-02 09:30:00 means 09:30 ET.
+
+        Extra columns
+        ─────────────
+          vwap and transactions are kept when present (non-None from the API).
+          They are NOT part of REQUIRED_COLUMNS but are preserved in the raw
+          Parquet file for reference.  The modeling pipeline's LocalFileProvider
+          and _standardise_columns() strip them automatically when loading for
+          feature engineering, so downstream code never sees them.
         """
         timestamps = pd.to_datetime(
             [r["t"] for r in results],
@@ -348,16 +373,26 @@ class PolygonProvider(BaseProvider):
             utc=True,
         ).tz_convert("America/New_York").tz_localize(None)  # tz-naive ET
 
-        df = pd.DataFrame(
-            {
-                "open":   [float(r["o"]) for r in results],
-                "high":   [float(r["h"]) for r in results],
-                "low":    [float(r["l"]) for r in results],
-                "close":  [float(r["c"]) for r in results],
-                "volume": [float(r["v"]) for r in results],
-            },
-            index=timestamps,
-        )
+        data: dict = {
+            "open":   [float(r["o"]) for r in results],
+            "high":   [float(r["h"]) for r in results],
+            "low":    [float(r["l"]) for r in results],
+            "close":  [float(r["c"]) for r in results],
+            "volume": [float(r["v"]) for r in results],
+        }
+
+        # Include vwap and transactions only when the API actually returned them.
+        vwap_vals = [r.get("vw") for r in results]
+        txn_vals  = [r.get("n")  for r in results]
+
+        if any(v is not None for v in vwap_vals):
+            data["vwap"] = [float(v) if v is not None else float("nan")
+                            for v in vwap_vals]
+        if any(v is not None for v in txn_vals):
+            data["transactions"] = [int(v) if v is not None else 0
+                                    for v in txn_vals]
+
+        df = pd.DataFrame(data, index=timestamps)
         df.index.name = None
         df.sort_index(inplace=True)
         return df
