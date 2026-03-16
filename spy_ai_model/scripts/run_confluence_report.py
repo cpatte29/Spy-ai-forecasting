@@ -11,26 +11,10 @@ The existing forecasting pipeline (main_pipeline.py) and live loop
 
 Usage
 ─────
-  # Live bars via Polygon (requires POLYGON_API_KEY):
-  python scripts/run_confluence_report.py --provider polygon --interval 5m
-
-  # From saved 10-year Polygon parquet:
-  python scripts/run_confluence_report.py \\
-      --provider file \\
-      --file-path data/raw/spy_5m_polygon.parquet \\
-      --interval 5m
-
-  # Skip analog if dataset not yet built:
-  python scripts/run_confluence_report.py \\
-      --provider file --file-path data/raw/spy_5m_polygon.parquet \\
-      --no-analog
-
-  # Increase zone lookback:
-  python scripts/run_confluence_report.py \\
-      --provider polygon --zone-lookback 40 --top-n 30
-
-  # Synthetic data smoke test (no API key, no file needed):
+  python scripts/run_confluence_report.py --provider polygon
+  python scripts/run_confluence_report.py --provider file --file-path data/raw/spy_5m_polygon.parquet
   python scripts/run_confluence_report.py --synthetic
+  python scripts/run_confluence_report.py --provider polygon --model-weight 0.7 --zone-weight 0.2 --analog-weight 0.1
 """
 
 from __future__ import annotations
@@ -102,6 +86,14 @@ def _parse_args() -> argparse.Namespace:
                    help="Score threshold for STRONG labels (default: 0.35).")
     p.add_argument("--moderate-score", default=0.12, type=float,
                    help="Score threshold for MODERATE labels (default: 0.12).")
+
+    # Weight overrides (normalised to sum=1 automatically)
+    p.add_argument("--model-weight",  default=None, type=float, metavar="W",
+                   help="Override model component weight (default: 0.50).")
+    p.add_argument("--zone-weight",   default=None, type=float, metavar="W",
+                   help="Override zone component weight (default: 0.30).")
+    p.add_argument("--analog-weight", default=None, type=float, metavar="W",
+                   help="Override analog component weight (default: 0.20).")
 
     # Misc
     p.add_argument("--synthetic", action="store_true", default=False,
@@ -321,12 +313,15 @@ def main() -> None:
 
     from confluence_engine.confluence_scorer import compute_confluence
     score_out = compute_confluence(
-        dir_prob     = model_out.get("dir_prob")   or 0.5,
-        pred_range   = model_out.get("pred_range") or 0.0,
-        zone_ctx     = zone_ctx,
-        analog       = analog_out or {},
-        strong_score = args.strong_score,
+        dir_prob       = model_out.get("dir_prob")   or 0.5,
+        pred_range     = model_out.get("pred_range") or 0.0,
+        zone_ctx       = zone_ctx,
+        analog         = analog_out or {},
+        strong_score   = args.strong_score,
         moderate_score = args.moderate_score,
+        model_weight   = args.model_weight,
+        zone_weight    = args.zone_weight,
+        analog_weight  = args.analog_weight,
     )
 
     from confluence_engine.report_formatter import format_confluence_report

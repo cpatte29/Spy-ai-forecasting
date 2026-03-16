@@ -58,13 +58,64 @@ _NEAR_DIST_THRESHOLD  = 0.010   # 1.0 %
 _MIN_ANALOG_MATCHES = 5     # require at least this many matches to trust analog
 
 
+def _score_to_signal(score: float, strong: float, moderate: float) -> str:
+    """Map a component score ∈ [−1, +1] to a directional signal label."""
+    if score >= strong:
+        return "STRONG_LONG"
+    elif score >= moderate:
+        return "MODERATE_LONG"
+    elif score <= -strong:
+        return "STRONG_SHORT"
+    elif score <= -moderate:
+        return "MODERATE_SHORT"
+    else:
+        return "NEUTRAL"
+
+
+def _classify_alignment(signals: list[str]) -> str:
+    """
+    Classify how well the individual signal labels agree.
+
+    Returns one of:
+      STRONG_ALIGNMENT  – all active signals point same direction
+      MODERATE_ALIGNMENT – majority point same direction
+      WEAK_CONFLICT     – at least two active signals disagree
+      STRONG_CONFLICT   – active signals point opposite extremes
+    """
+    if not signals:
+        return "STRONG_ALIGNMENT"
+
+    bullish = sum(1 for s in signals if "LONG"  in s)
+    bearish = sum(1 for s in signals if "SHORT" in s)
+    neutral = sum(1 for s in signals if s == "NEUTRAL")
+    active  = bullish + bearish
+
+    if active == 0:
+        return "STRONG_ALIGNMENT"  # all neutral
+
+    if bullish > 0 and bearish > 0:
+        # At least one signal points each way
+        if (bullish >= 2 and "STRONG" in "".join(s for s in signals if "SHORT" in s)) or \
+           (bearish >= 2 and "STRONG" in "".join(s for s in signals if "LONG"  in s)):
+            return "STRONG_CONFLICT"
+        return "WEAK_CONFLICT"
+
+    # All active signals agree
+    if neutral == 0:
+        return "STRONG_ALIGNMENT"
+    return "MODERATE_ALIGNMENT"
+
+
 def compute_confluence(
-    dir_prob:    float,
-    pred_range:  float,
-    zone_ctx:    dict,
-    analog:      dict,
+    dir_prob:       float,
+    pred_range:     float,
+    zone_ctx:       dict,
+    analog:         dict,
     strong_score:   float = _STRONG_SCORE,
     moderate_score: float = _MODERATE_SCORE,
+    model_weight:   float | None = None,
+    zone_weight:    float | None = None,
+    analog_weight:  float | None = None,
 ) -> dict:
     """
     Compute a weighted confluence score and map it to a label.
@@ -81,15 +132,33 @@ def compute_confluence(
                  (or a dict with rejection_rate, breakout_rate, n_matches).
     strong_score   Score threshold for STRONG labels (default 0.35).
     moderate_score Score threshold for MODERATE labels (default 0.12).
+    model_weight   Override model weight (default 0.50).  Will be normalised
+    zone_weight    Override zone  weight (default 0.30).  with the other two
+    analog_weight  Override analog weight (default 0.20). so they sum to 1.
 
     Returns
     ───────
     dict with keys:
-        label        str    – confluence label
-        score        float  – weighted score in [−1, +1]
-        components   dict   – individual component scores
-        detail       dict   – raw inputs for logging / report
+        label          str    – confluence label
+        score          float  – weighted score in [−1, +1]
+        components     dict   – individual component scores
+        signals        dict   – individual signal labels (model/zone/analog)
+        alignment      str    – STRONG_ALIGNMENT / MODERATE_ALIGNMENT /
+                                WEAK_CONFLICT / STRONG_CONFLICT
+        weights        dict   – normalised weights used
+        detail         dict   – raw inputs for logging / report
     """
+    # ── 0. Resolve weights ────────────────────────────────────────────────
+    mw = model_weight  if model_weight  is not None else 0.50
+    zw = zone_weight   if zone_weight   is not None else 0.30
+    aw = analog_weight if analog_weight is not None else 0.20
+    total_w = mw + zw + aw
+    if total_w <= 0:
+        mw, zw, aw, total_w = 0.50, 0.30, 0.20, 1.0
+    mw /= total_w
+    zw /= total_w
+    aw /= total_w
+
     # ── 1. Model component ────────────────────────────────────────────────
     # Transform P(up) ∈ [0, 1] → model_score ∈ [−1, +1]
     # 0.5 → 0.0,  1.0 → +1.0,  0.0 → −1.0
@@ -136,22 +205,26 @@ def compute_confluence(
         analog_active = True
 
     # ── 4. Weighted combination ───────────────────────────────────────────
-    score = (0.50 * model_score
-           + 0.30 * zone_score
-           + 0.20 * analog_score)
+    score = (mw * model_score
+           + zw * zone_score
+           + aw * analog_score)
     score = max(-1.0, min(1.0, score))
 
     # ── 5. Label ──────────────────────────────────────────────────────────
-    if score >= strong_score:
-        label = "STRONG_LONG"
-    elif score >= moderate_score:
-        label = "MODERATE_LONG"
-    elif score <= -strong_score:
-        label = "STRONG_SHORT"
-    elif score <= -moderate_score:
-        label = "MODERATE_SHORT"
-    else:
-        label = "NEUTRAL"
+    label = _score_to_signal(score, strong_score, moderate_score)
+
+    # ── 6. Individual signal labels ───────────────────────────────────────
+    model_signal  = _score_to_signal(model_score,  strong_score, moderate_score)
+    zone_signal   = _score_to_signal(zone_score,   strong_score, moderate_score)
+    analog_signal = (
+        _score_to_signal(analog_score, strong_score, moderate_score)
+        if analog_active else "N/A"
+    )
+
+    active_signals = [model_signal, zone_signal]
+    if analog_active:
+        active_signals.append(analog_signal)
+    alignment = _classify_alignment(active_signals)
 
     return {
         "label": label,
@@ -161,10 +234,16 @@ def compute_confluence(
             "zone_score":   round(zone_score,   4),
             "analog_score": round(analog_score, 4),
         },
+        "signals": {
+            "model_signal":  model_signal,
+            "zone_signal":   zone_signal,
+            "analog_signal": analog_signal,
+        },
+        "alignment": alignment,
         "weights": {
-            "model":  0.50,
-            "zone":   0.30,
-            "analog": 0.20,
+            "model":  round(mw, 4),
+            "zone":   round(zw, 4),
+            "analog": round(aw, 4),
         },
         "detail": {
             "dir_prob":       dir_prob,

@@ -180,6 +180,30 @@ def format_confluence_report(
 
     _add(DASH)
 
+    # ── section 3b: signal diagnostics ────────────────────────────────────
+    _add("  Signal Diagnostics:")
+
+    signals   = score_out.get("signals",   {})
+    alignment = score_out.get("alignment", "")
+
+    m_sig = signals.get("model_signal",  "–")
+    z_sig = signals.get("zone_signal",   "–")
+    a_sig = signals.get("analog_signal", "N/A")
+
+    _add(f"    Forecast alone  : {m_sig}")
+    _add(f"    Zone bias alone : {z_sig}")
+    _add(f"    Analog alone    : {a_sig}")
+
+    # Alignment wording with confidence colour
+    _ALIGN_WORDING = {
+        "STRONG_ALIGNMENT":   "✔  Strong alignment  – signals agree",
+        "MODERATE_ALIGNMENT": "~  Moderate alignment – most signals agree",
+        "WEAK_CONFLICT":      "!  Weak conflict     – signals disagree",
+        "STRONG_CONFLICT":    "✘  Strong conflict   – signals oppose each other",
+    }
+    _add(f"    Alignment       : {_ALIGN_WORDING.get(alignment, alignment)}")
+    _add(DASH)
+
     # ── section 4: scorer breakdown ───────────────────────────────────────
     _add("  Score Breakdown:")
     comps   = score_out.get("components", {})
@@ -237,6 +261,10 @@ def format_confluence_report(
         "breakout_rate":    analog_out.get("breakout_rate")  if analog_out else None,
         "confluence_score": score_out.get("score"),
         "confluence_label": label,
+        "alignment":        score_out.get("alignment"),
+        "model_signal":     signals.get("model_signal"),
+        "zone_signal":      signals.get("zone_signal"),
+        "analog_signal":    signals.get("analog_signal"),
         "model_score":      comps.get("model_score"),
         "zone_score":       comps.get("zone_score"),
         "analog_score":     comps.get("analog_score"),
