@@ -62,6 +62,7 @@ from data.quality import validate_bars
 from features.feature_engineering import build_features
 from models.train_direction import load_direction_model, predict_direction_proba
 from models.train_range import load_range_model, predict_range
+from confluence_engine import get_zone_context, apply_zone_tiebreaker
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +569,13 @@ def run_live_prediction(
     pred_range    = float(predict_range(range_model, latest_features)[0])
     current_close = float(df_raw.iloc[scored_pos]["close"])
     signal        = _signal_label(dir_proba, threshold, pred_range, effective_range_gate)
+    # Zone tiebreaker: when signal is NO_TRADE, let zone bias tip the call
+    try:
+        zone_ctx = get_zone_context(df_raw.iloc[:scored_pos + 1], current_price=current_close)
+        signal   = apply_zone_tiebreaker(signal, zone_ctx)
+    except Exception as _ze:
+        logger.warning("Zone tiebreaker skipped: %s", _ze)
+        zone_ctx = {}
     conf_bucket   = _confidence_bucket(dir_proba)
     rng_bucket    = _range_bucket(pred_range)
     now_utc       = datetime.now(timezone.utc).isoformat()

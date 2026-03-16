@@ -50,9 +50,11 @@ _MODERATE_SCORE = 0.12
 _INSIDE_ZONE_SCORE = 0.60    # magnitude when price is inside a zone
 _CLOSE_ZONE_SCORE  = 0.35    # within 0.3 %
 _NEAR_ZONE_SCORE   = 0.15    # within 1.0 %
+_FAR_ZONE_SCORE    = 0.08    # within 3.0 %  (detected but not nearby)
 
 _CLOSE_DIST_THRESHOLD = 0.003   # 0.3 %
 _NEAR_DIST_THRESHOLD  = 0.010   # 1.0 %
+_FAR_DIST_THRESHOLD   = 0.030   # 3.0 %
 
 # ── analog constants ──────────────────────────────────────────────────────────
 _MIN_ANALOG_MATCHES = 5     # require at least this many matches to trust analog
@@ -172,8 +174,10 @@ def compute_confluence(
     demand = zone_ctx.get("demand", {})
     zone_score = 0.0
 
-    supply_strength = float(supply.get("zone_strength") or 1.0)
-    demand_strength = float(demand.get("zone_strength") or 1.0)
+    _s = supply.get("zone_strength")
+    _d = demand.get("zone_strength")
+    supply_strength = float(_s) if _s is not None else 1.0
+    demand_strength = float(_d) if _d is not None else 1.0
 
     # Supply zone contribution (bearish pressure)
     if supply.get("inside_zone_flag"):
@@ -184,6 +188,8 @@ def compute_confluence(
             zone_score -= _CLOSE_ZONE_SCORE * supply_strength
         elif dist <= _NEAR_DIST_THRESHOLD:
             zone_score -= _NEAR_ZONE_SCORE * supply_strength
+        elif dist <= _FAR_DIST_THRESHOLD:
+            zone_score -= _FAR_ZONE_SCORE * supply_strength
 
     # Demand zone contribution (bullish support)
     if demand.get("inside_zone_flag"):
@@ -194,6 +200,8 @@ def compute_confluence(
             zone_score += _CLOSE_ZONE_SCORE * demand_strength
         elif dist <= _NEAR_DIST_THRESHOLD:
             zone_score += _NEAR_ZONE_SCORE * demand_strength
+        elif dist <= _FAR_DIST_THRESHOLD:
+            zone_score += _FAR_ZONE_SCORE * demand_strength
 
     zone_score = max(-1.0, min(1.0, zone_score))
 
@@ -263,3 +271,52 @@ def compute_confluence(
             "breakout_rate":        analog.get("breakout_rate",  None) if analog else None,
         },
     }
+
+
+def apply_zone_tiebreaker(
+    signal:           str,
+    zone_ctx:         dict,
+    require_strength: float = 0.30,
+) -> str:
+    """
+    When the direction model produces NO_TRADE, use zone bias as a tiebreaker.
+
+    Rules
+    ─────
+    AT_SUPPLY / SUPPLY_OVERHEAD  +  zone_strength >= require_strength  →  SHORT_BIAS
+    AT_DEMAND / DEMAND_BELOW     +  zone_strength >= require_strength  →  LONG_BIAS
+    All other cases leave the signal unchanged.
+
+    Parameters
+    ──────────
+    signal           Current signal string (LONG_BIAS / SHORT_BIAS / NO_TRADE).
+    zone_ctx         Output of get_zone_context().
+    require_strength Minimum zone_strength score to allow the override (0–1).
+                     Default 0.30 — weak zones do not break the tie.
+
+    Returns
+    ───────
+    Possibly-overridden signal string.
+    """
+    if signal != "NO_TRADE":
+        return signal
+
+    bias = zone_ctx.get("bias", "NEUTRAL")
+
+    if bias in ("AT_SUPPLY", "SUPPLY_OVERHEAD"):
+        strength = zone_ctx.get("supply", {}).get("zone_strength")
+        if strength is not None and float(strength) >= require_strength:
+            logger.debug(
+                "Zone tiebreaker: %s (strength=%.2f) → SHORT_BIAS", bias, strength
+            )
+            return "SHORT_BIAS"
+
+    if bias in ("AT_DEMAND", "DEMAND_BELOW"):
+        strength = zone_ctx.get("demand", {}).get("zone_strength")
+        if strength is not None and float(strength) >= require_strength:
+            logger.debug(
+                "Zone tiebreaker: %s (strength=%.2f) → LONG_BIAS", bias, strength
+            )
+            return "LONG_BIAS"
+
+    return signal

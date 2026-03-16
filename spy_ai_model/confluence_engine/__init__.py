@@ -24,13 +24,14 @@ Confluence labels
 """
 
 from .zone_context       import get_zone_context
-from .confluence_scorer  import compute_confluence
+from .confluence_scorer  import compute_confluence, apply_zone_tiebreaker
 from .report_formatter   import format_confluence_report
 from .zone_scorer        import score_zone_strength
 
 __all__ = [
     "get_zone_context",
     "compute_confluence",
+    "apply_zone_tiebreaker",
     "format_confluence_report",
     "score_zone_strength",
 ]
