@@ -28,6 +28,7 @@ Output dict structure
         "bars_since_created":    int  | None
         "displacement_size":     float | None
         "volume_spike_ratio":    float | None
+        "zone_strength":         float | None   # 0–1 composite strength score
         "n_zones_found":         int
     },
     "demand": { same keys, distance = (price - zone_high) / price },
@@ -277,6 +278,8 @@ def _nearest_supply_context(
     df:            pd.DataFrame,
 ) -> dict:
     """Find the nearest supply zone at or above current_price."""
+    from confluence_engine.zone_scorer import score_zone_strength
+
     base: dict[str, Any] = {
         "zone_high":            None,
         "zone_low":             None,
@@ -285,6 +288,7 @@ def _nearest_supply_context(
         "bars_since_created":   None,
         "displacement_size":    None,
         "volume_spike_ratio":   None,
+        "zone_strength":        None,
         "n_zones_found":        0,
     }
 
@@ -319,6 +323,12 @@ def _nearest_supply_context(
     base["displacement_size"]  = float(zone.get("displacement_size", 0))
     base["volume_spike_ratio"] = float(zone.get("volume_spike_ratio", 1.0))
     base["bars_since_created"] = _bars_since(zone["creation_timestamp"], df)
+    base["zone_strength"]      = score_zone_strength(
+        zone,
+        df,
+        zone_type="supply",
+        bars_since=base["bars_since_created"],
+    )
 
     return base
 
@@ -329,6 +339,8 @@ def _nearest_demand_context(
     df:            pd.DataFrame,
 ) -> dict:
     """Find the nearest demand zone at or below current_price."""
+    from confluence_engine.zone_scorer import score_zone_strength
+
     base: dict[str, Any] = {
         "zone_high":            None,
         "zone_low":             None,
@@ -337,6 +349,7 @@ def _nearest_demand_context(
         "bars_since_created":   None,
         "displacement_size":    None,
         "volume_spike_ratio":   None,
+        "zone_strength":        None,
         "n_zones_found":        0,
     }
 
@@ -368,6 +381,12 @@ def _nearest_demand_context(
     base["displacement_size"]  = float(zone.get("displacement_size", 0))
     base["volume_spike_ratio"] = float(zone.get("volume_spike_ratio", 1.0))
     base["bars_since_created"] = _bars_since(zone["creation_timestamp"], df)
+    base["zone_strength"]      = score_zone_strength(
+        zone,
+        df,
+        zone_type="demand",
+        bars_since=base["bars_since_created"],
+    )
 
     return base
 

@@ -26,5 +26,11 @@ Confluence labels
 from .zone_context       import get_zone_context
 from .confluence_scorer  import compute_confluence
 from .report_formatter   import format_confluence_report
+from .zone_scorer        import score_zone_strength
 
-__all__ = ["get_zone_context", "compute_confluence", "format_confluence_report"]
+__all__ = [
+    "get_zone_context",
+    "compute_confluence",
+    "format_confluence_report",
+    "score_zone_strength",
+]

@@ -165,29 +165,35 @@ def compute_confluence(
     model_score = (dir_prob - 0.5) * 2.0
 
     # ── 2. Zone component ─────────────────────────────────────────────────
+    # zone_score = proximity_score × direction × zone_strength
+    # zone_strength ∈ [0, 1] scales each zone's contribution so that weak
+    # zones contribute little and strong institutional zones contribute fully.
     supply = zone_ctx.get("supply", {})
     demand = zone_ctx.get("demand", {})
     zone_score = 0.0
 
+    supply_strength = float(supply.get("zone_strength") or 1.0)
+    demand_strength = float(demand.get("zone_strength") or 1.0)
+
     # Supply zone contribution (bearish pressure)
     if supply.get("inside_zone_flag"):
-        zone_score -= _INSIDE_ZONE_SCORE
+        zone_score -= _INSIDE_ZONE_SCORE * supply_strength
     elif supply.get("distance_to_zone_pct") is not None:
         dist = float(supply["distance_to_zone_pct"])
         if dist <= _CLOSE_DIST_THRESHOLD:
-            zone_score -= _CLOSE_ZONE_SCORE
+            zone_score -= _CLOSE_ZONE_SCORE * supply_strength
         elif dist <= _NEAR_DIST_THRESHOLD:
-            zone_score -= _NEAR_ZONE_SCORE
+            zone_score -= _NEAR_ZONE_SCORE * supply_strength
 
     # Demand zone contribution (bullish support)
     if demand.get("inside_zone_flag"):
-        zone_score += _INSIDE_ZONE_SCORE
+        zone_score += _INSIDE_ZONE_SCORE * demand_strength
     elif demand.get("distance_to_zone_pct") is not None:
         dist = float(demand["distance_to_zone_pct"])
         if dist <= _CLOSE_DIST_THRESHOLD:
-            zone_score += _CLOSE_ZONE_SCORE
+            zone_score += _CLOSE_ZONE_SCORE * demand_strength
         elif dist <= _NEAR_DIST_THRESHOLD:
-            zone_score += _NEAR_ZONE_SCORE
+            zone_score += _NEAR_ZONE_SCORE * demand_strength
 
     zone_score = max(-1.0, min(1.0, zone_score))
 
@@ -246,12 +252,14 @@ def compute_confluence(
             "analog": round(aw, 4),
         },
         "detail": {
-            "dir_prob":       dir_prob,
-            "pred_range":     pred_range,
-            "zone_bias":      zone_ctx.get("bias", "NEUTRAL"),
-            "n_matches":      n_matches,
-            "analog_active":  analog_active,
-            "rejection_rate": analog.get("rejection_rate", None) if analog else None,
-            "breakout_rate":  analog.get("breakout_rate",  None) if analog else None,
+            "dir_prob":             dir_prob,
+            "pred_range":           pred_range,
+            "zone_bias":            zone_ctx.get("bias", "NEUTRAL"),
+            "supply_zone_strength": supply_strength,
+            "demand_zone_strength": demand_strength,
+            "n_matches":            n_matches,
+            "analog_active":        analog_active,
+            "rejection_rate":       analog.get("rejection_rate", None) if analog else None,
+            "breakout_rate":        analog.get("breakout_rate",  None) if analog else None,
         },
     }
