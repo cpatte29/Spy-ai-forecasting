@@ -21,7 +21,9 @@ VWAP Regime   vwap_reclaim_flag, vwap_loss_flag, vwap_trend_strength,
               vwap_distance_percentile
 Gap / Prior   overnight_gap_pct, dist_prior_high, dist_prior_low,
               dist_prior_close, prior_day_range, prior_day_trend,
-              opened_in_prior_range, prior_close_reclaimed, gap_fill_pct
+              opened_in_prior_range, prior_close_reclaimed, gap_fill_pct,
+              prior_day_return_pct, opened_above_prior_high_flag,
+              opened_below_prior_low_flag, prior_day_vwap_distance
 """
 
 from __future__ import annotations
@@ -68,15 +70,21 @@ NEW_VWAP_FEATURES: list[str] = [
 # Overnight-gap and prior-day context features.
 # Used by compare_gap_features.py to isolate the lift from this feature group.
 NEW_GAP_FEATURES: list[str] = [
-    "overnight_gap_pct",        # (session_open − prior_close) / prior_close; constant per session
-    "dist_prior_high",          # (close − prior_high) / close; positive = above prior high
-    "dist_prior_low",           # (close − prior_low)  / close; positive = above prior low
-    "dist_prior_close",         # (close − prior_close) / close; signed distance from prior close
-    "prior_day_range",          # (prior_high − prior_low) / prior_close; constant per session
-    "prior_day_trend",          # +1 prior day bullish, −1 bearish, 0 flat; constant per session
-    "opened_in_prior_range",    # 1 if session open was inside prior (low, high); constant per session
-    "prior_close_reclaimed",    # 1 if current close ≥ prior close; dynamic per bar
-    "gap_fill_pct",             # fraction of overnight gap recovered (0=none, 1=full); dynamic
+    # ── original 9 ──────────────────────────────────────────────────────────
+    "overnight_gap_pct",             # (session_open − prior_close) / prior_close; constant/session
+    "dist_prior_high",               # (close − prior_high) / close; positive = above prior high
+    "dist_prior_low",                # (close − prior_low)  / close; positive = above prior low
+    "dist_prior_close",              # (close − prior_close) / close; signed distance from prior close
+    "prior_day_range",               # (prior_high − prior_low) / prior_close; constant/session
+    "prior_day_trend",               # +1 prior day bullish, −1 bearish, 0 flat; constant/session
+    "opened_in_prior_range",         # 1 if session open ∈ [prior_low, prior_high]; constant/session
+    "prior_close_reclaimed",         # 1 if current close ≥ prior close; dynamic/bar
+    "gap_fill_pct",                  # fraction of overnight gap recovered (0=none, 1=full); dynamic
+    # ── extension 4 ─────────────────────────────────────────────────────────
+    "prior_day_return_pct",          # (prior_close − prior_open) / prior_open; magnitude+direction
+    "opened_above_prior_high_flag",  # 1 if session open > prior high (gap-up breakout); constant/session
+    "opened_below_prior_low_flag",   # 1 if session open < prior low  (gap-down breakdown); constant/session
+    "prior_day_vwap_distance",       # (close − prior_day_vwap) / close; VWAP computed from OHLCV
 ]
 
 
@@ -227,6 +235,22 @@ def _prior_day_context(df: pd.DataFrame) -> dict[str, pd.Series]:
                           Positive values mean filling a gap-up (price drifted down).
                           Negative values mean the gap is extending.
                           Clamped to [−2, 2]; set to 0 when gap ≈ 0.
+
+    prior_day_vwap_distance (close − prior_vwap) / close
+                          Distance from prior session's cumulative VWAP (at close).
+                          Computed entirely from OHLCV; no external column needed.
+
+    Extension constants (one value per session)
+    ─────────────────────────────────────────────
+    prior_day_return_pct  (prior_close − prior_open) / prior_open
+                          Signed magnitude of the prior session's return.
+                          Positive = prior day up; negative = prior day down.
+                          More informative than prior_day_trend (±1 only).
+
+    opened_above_prior_high_flag  1 if session_open > prior_high (gap-up breakout)
+    opened_below_prior_low_flag   1 if session_open < prior_low  (gap-down breakdown)
+                          Together with opened_in_prior_range these three flags
+                          partition every session into exactly one gap category.
     """
     close    = df["close"]
     date_key = df.index.normalize()   # DatetimeIndex of each bar's calendar date
@@ -298,6 +322,45 @@ def _prior_day_context(df: pd.DataFrame) -> dict[str, pd.Series]:
     #    fillna(0) when gap ≈ 0 (avoid division by ~0 noise)
     denom = (pc - so).replace(0, np.nan)
     feat["gap_fill_pct"] = ((close - so) / denom).clip(-2.0, 2.0).fillna(0.0)
+
+    # ── Extension features ────────────────────────────────────────────────────
+
+    # 10. prior_day_return_pct – signed magnitude of prior session move [constant/session]
+    #     Positive = prior day closed higher than it opened (bullish).
+    #     Negative = prior day closed lower (bearish).
+    #     Carries more information than prior_day_trend (which is just ±1/0).
+    po_safe = po.replace(0, np.nan)
+    prior_return_daily = pd.Series(
+        ((prior_close - prior_open) / prior_open.replace(0, np.nan)).values,
+        index=daily_close.index,
+    )
+    feat["prior_day_return_pct"] = _to_bar(prior_return_daily)
+
+    # 11. opened_above_prior_high_flag – gap-up breakout              [constant/session]
+    #     1 if today's session open price is strictly above the prior day high.
+    #     Combines with opened_in_prior_range (which would be 0 in this case)
+    #     to fully characterise the three gap categories:
+    #       opened_above_prior_high = 1 → gap-up breakout
+    #       opened_in_prior_range   = 1 → opened inside prior range (no gap)
+    #       opened_below_prior_low  = 1 → gap-down breakdown
+    above_ph = (so > ph).astype(float)
+    feat["opened_above_prior_high_flag"] = above_ph.where(ph.notna(), np.nan)
+
+    # 12. opened_below_prior_low_flag – gap-down breakdown            [constant/session]
+    below_pl = (so < pl).astype(float)
+    feat["opened_below_prior_low_flag"] = below_pl.where(pl.notna(), np.nan)
+
+    # 13. prior_day_vwap_distance – distance from prior session's VWAP [dynamic/bar]
+    #     Uses the cumulative intraday VWAP (typical price * volume, reset daily)
+    #     and takes the LAST value of each session as that day's closing VWAP.
+    #     This is fully causal: prior_vwap only uses data up to yesterday's close.
+    #     Computed entirely from OHLCV — no dependency on the Polygon vwap column.
+    intraday_vwap     = _daily_vwap(df)
+    daily_vwap_close  = intraday_vwap.groupby(date_key).last()   # session-close VWAP
+    prior_vwap_daily  = daily_vwap_close.shift(1)
+    pv                = _to_bar(prior_vwap_daily)
+    pv_safe           = pv.replace(0, np.nan)
+    feat["prior_day_vwap_distance"] = (close - pv) / c_safe
 
     return feat
 
