@@ -35,6 +35,7 @@ from setup_scanner.setup_detector import detect_setups
 from setup_scanner.setup_scorer import score_setup, grade_setup
 from setup_scanner.setup_report import format_setup_report
 from setup_scanner.setup_alerts import evaluate_alert_state, emit_alert, log_alert_csv
+from setup_scanner.volume_integration import compute_volume_context, score_volume, volume_regime_label
 
 __all__ = [
     "SetupType",
@@ -49,4 +50,7 @@ __all__ = [
     "evaluate_alert_state",
     "emit_alert",
     "log_alert_csv",
+    "compute_volume_context",
+    "score_volume",
+    "volume_regime_label",
 ]

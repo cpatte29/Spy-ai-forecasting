@@ -119,6 +119,7 @@ def build_snapshot(
     features:      dict | None = None,
     chop_detected: bool        = False,
     chop_score:    float       = 0.0,
+    volume_ctx:    dict | None = None,
 ) -> dict:
     """
     Assemble a normalised snapshot dict from existing system outputs.
@@ -134,6 +135,7 @@ def build_snapshot(
     features    Dict of feature values for the scored bar (from build_features).
     chop_detected  Boolean flag from an external chop detector.
     chop_score  0–1 choppiness level (1 = maximum chop).
+    volume_ctx  Output of compute_volume_context() (or None if unavailable).
     """
     if df_bars.empty:
         raise ValueError("df_bars must not be empty")
@@ -183,6 +185,9 @@ def build_snapshot(
         # chop
         "chop_detected": chop_detected,
         "chop_score":    chop_score,
+
+        # volume (from volume_integration.compute_volume_context)
+        "volume_ctx":    volume_ctx or {},
     }
 
 

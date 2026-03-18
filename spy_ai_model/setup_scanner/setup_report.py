@@ -30,6 +30,7 @@ from setup_scanner.setup_definitions import (
     SetupResult,
     SetupType,
 )
+from setup_scanner.volume_integration import volume_regime_label
 
 # ── grade display colours (ANSI) ──────────────────────────────────────────────
 # Only used when colour=True is passed to format_setup_report
@@ -154,6 +155,27 @@ def format_setup_report(
         f"   Direction: {top.direction.value}"
     )
     lines.append(f"  Alert     : {alert_label}")
+
+    # ── volume context line ───────────────────────────────────────────────
+    vol_raw = top.raw or {}
+    vol_ctx_for_report = {
+        "rvol":                vol_raw.get("rvol"),
+        "volume_regime":       vol_raw.get("volume_regime", "NORMAL"),
+        "vol_imbalance":       vol_raw.get("vol_imbalance"),
+        "imbalance_label":     vol_raw.get("imbalance_label", "NEUTRAL"),
+        "breakout_confirmed":  vol_raw.get("breakout_confirmed", False),
+        "rejection_confirmed": vol_raw.get("rejection_confirmed", False),
+        "low_participation":   vol_raw.get("low_participation", False),
+    }
+    regime = vol_ctx_for_report.get("volume_regime", "NORMAL")
+    low_p  = vol_ctx_for_report.get("low_participation", False)
+    regime_colour = (
+        _ANSI_GREEN  if regime == "HIGH"   else
+        _ANSI_RED    if low_p              else
+        ""
+    )
+    vol_line = volume_regime_label(vol_ctx_for_report)
+    lines.append(f"  Volume    : {_coloured(vol_line, regime_colour, colour)}")
     lines.append(dash)
 
     # ── why this setup ────────────────────────────────────────────────────
@@ -188,7 +210,7 @@ def format_setup_report(
         bd = top.score_breakdown
         component_order = [
             "forecast_prob", "range_forecast", "zone_proximity", "zone_strength",
-            "analog_alignment", "structure", "chop_penalty", "confirmation",
+            "analog_alignment", "structure", "volume_score", "chop_penalty", "confirmation",
         ]
         for key in component_order:
             val = bd.get(key, 0)

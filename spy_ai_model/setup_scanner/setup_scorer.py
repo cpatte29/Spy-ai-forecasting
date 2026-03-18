@@ -9,16 +9,17 @@ Each setup is evaluated independently — the scorer does not know which
 setup is "top", it just grades the raw evidence for *that* setup type.
 The caller ranks setups by score to find the top one.
 
-Component weights (sum to 100 available points)
-────────────────────────────────────────────────
+Component weights
+─────────────────
   forecast_prob      25 pts  – direction probability edge from 0.50
   range_forecast     10 pts  – predicted volatility (range) level
   zone_proximity     20 pts  – how close / inside the relevant zone
   zone_strength      10 pts  – institutional quality of the zone (0–1 field)
   analog_alignment   15 pts  – historical analog rejection/breakout rates
   structure          15 pts  – candlestick + price structure signals
+  volume_score    −10..+15   – RVOL + imbalance + participation confirmation
                     ───────
-  subtotal          (95 pts max from components)
+  subtotal          (95 pts max from fixed components, + volume adjustment)
 
   + confirmation bonus  up to +5 pts for extra confirming signals
   − chop penalty        up to −15 pts for chop conditions
@@ -57,6 +58,7 @@ from setup_scanner.setup_definitions import (
     SetupType,
     SETUP_DIRECTION,
 )
+from setup_scanner.volume_integration import score_volume
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +474,7 @@ def score_setup(
             "zone_strength":    0,
             "analog_alignment": 0,
             "structure":        0,
+            "volume_score":     0,
             "chop_penalty":     0,
             "confirmation":     0,
             "total":            0,
@@ -492,21 +495,25 @@ def score_setup(
         )
 
     # ── 1. Component scores ───────────────────────────────────────────────
-    prob_pts    = _score_forecast_prob(dir_prob, direction)
-    range_pts   = _score_range_forecast(pred_range)
-    prox_pts    = _score_zone_proximity(setup_type, zone_ctx)
+    prob_pts     = _score_forecast_prob(dir_prob, direction)
+    range_pts    = _score_range_forecast(pred_range)
+    prox_pts     = _score_zone_proximity(setup_type, zone_ctx)
     strength_pts = _score_zone_strength(setup_type, zone_ctx)
-    analog_pts  = _score_analog(setup_type, analog)
-    struct_pts  = _score_structure(snapshot, setup_type, detection)
+    analog_pts   = _score_analog(setup_type, analog)
+    struct_pts   = _score_structure(snapshot, setup_type, detection)
 
-    # ── 2. Chop penalty and confirmation bonus ────────────────────────────
+    # ── 2. Volume score (−10 to +15) ─────────────────────────────────────
+    vol_ctx  = snapshot.get("volume_ctx") or {}
+    vol_pts  = score_volume(vol_ctx, setup_type, direction)
+
+    # ── 3. Chop penalty and confirmation bonus ────────────────────────────
     chop_ded  = _score_chop_penalty(snapshot)
     conf_bon  = _confirmation_bonus(snapshot, setup_type, detection)
 
-    # ── 3. Raw total ──────────────────────────────────────────────────────
+    # ── 4. Raw total ──────────────────────────────────────────────────────
     raw_total = (
         prob_pts + range_pts + prox_pts + strength_pts
-        + analog_pts + struct_pts + conf_bon - chop_ded
+        + analog_pts + struct_pts + vol_pts + conf_bon - chop_ded
     )
 
     # For NO_SETUP: cap at 45 (it can never grade above C)
@@ -522,6 +529,7 @@ def score_setup(
         "zone_strength":    strength_pts,
         "analog_alignment": analog_pts,
         "structure":        struct_pts,
+        "volume_score":     vol_pts,
         "chop_penalty":    -chop_ded,
         "confirmation":     conf_bon,
         "total":            score,
@@ -554,6 +562,7 @@ def grade_setup(score: int) -> SetupGrade:
 
 def _build_raw(snapshot: dict) -> dict:
     """Extract a compact raw-values dict for logging."""
+    vol = snapshot.get("volume_ctx") or {}
     return {
         "dir_prob":            snapshot["dir_prob"],
         "pred_range":          snapshot["pred_range"],
@@ -579,6 +588,16 @@ def _build_raw(snapshot: dict) -> dict:
         "dist_vwap":           snapshot.get("dist_vwap"),
         "vwap_reclaim_flag":   snapshot.get("vwap_reclaim_flag"),
         "vwap_loss_flag":      snapshot.get("vwap_loss_flag"),
+        # volume fields
+        "rvol":                vol.get("rvol"),
+        "volume_regime":       vol.get("volume_regime", "NORMAL"),
+        "vol_imbalance":       vol.get("vol_imbalance"),
+        "imbalance_label":     vol.get("imbalance_label", "NEUTRAL"),
+        "breakout_confirmed":  vol.get("breakout_confirmed", False),
+        "rejection_confirmed": vol.get("rejection_confirmed", False),
+        "low_participation":   vol.get("low_participation", False),
+        "current_volume":      vol.get("current_volume"),
+        "tod_avg_volume":      vol.get("tod_avg_volume"),
     }
 
 

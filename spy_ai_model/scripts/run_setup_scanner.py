@@ -64,6 +64,7 @@ from setup_scanner.setup_scorer import rank_all_setups
 from setup_scanner.setup_report import format_setup_report, format_replay_summary
 from setup_scanner.setup_alerts import process_alerts, LOG_FILE
 from setup_scanner.setup_definitions import SetupGrade, SetupType
+from setup_scanner.volume_integration import compute_volume_context
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,13 @@ def run_scan(
     # ── 9. Feature dict for structure signals ─────────────────────────────
     feat_dict = df_feat.iloc[pos].to_dict() if pos < len(df_feat) else {}
 
+    # ── 9b. Volume context ────────────────────────────────────────────────
+    vol_ctx = {}
+    try:
+        vol_ctx = compute_volume_context(df_scored, bar_ts=scored_ts)
+    except Exception as exc:
+        logger.warning("Volume context failed: %s", exc)
+
     # ── 10. Build snapshot ────────────────────────────────────────────────
     snapshot = build_snapshot(
         df_bars       = df_scored,
@@ -199,6 +207,7 @@ def run_scan(
         analog        = analog,
         confluence    = confluence,
         features      = feat_dict,
+        volume_ctx    = vol_ctx,
     )
 
     # ── 11. Detect setups ─────────────────────────────────────────────────
@@ -517,6 +526,10 @@ def cmd_replay(args: argparse.Namespace) -> None:
                 pass
 
             feat_dict = df_feat_all.iloc[i].to_dict()
+            try:
+                vol_ctx_r = compute_volume_context(df_hist, bar_ts=scored_ts)
+            except Exception:
+                vol_ctx_r = {}
             snapshot  = build_snapshot(
                 df_bars    = df_hist,
                 dir_prob   = dir_prob,
@@ -525,6 +538,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
                 analog     = {},
                 confluence = confluence,
                 features   = feat_dict,
+                volume_ctx = vol_ctx_r,
             )
 
             detections     = detect_setups(snapshot)
