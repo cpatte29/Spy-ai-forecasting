@@ -10,14 +10,21 @@ SPY Setup Scanner CLI — three operating modes:
 
 Usage examples
 ──────────────
-  # Single snapshot (live Polygon data):
+  # Single snapshot — SPY (live Polygon data):
   python3 scripts/run_setup_scanner.py snapshot --provider polygon
+
+  # Single snapshot — other ticker:
+  python3 scripts/run_setup_scanner.py snapshot --ticker QQQ --provider polygon --breakdown
+  python3 scripts/run_setup_scanner.py snapshot --ticker NVDA --provider polygon
+  python3 scripts/run_setup_scanner.py snapshot --ticker AAPL --provider yfinance
 
   # Live mode (rescans every 5 minutes during market hours):
   python3 scripts/run_setup_scanner.py live --provider polygon --interval 300
+  python3 scripts/run_setup_scanner.py live --ticker TSLA --provider polygon
 
   # Historical replay evaluation:
   python3 scripts/run_setup_scanner.py replay --lookback-days 60 --provider polygon
+  python3 scripts/run_setup_scanner.py replay --ticker QQQ --lookback-days 30 --provider polygon
 
   # Replay from a local file:
   python3 scripts/run_setup_scanner.py replay --file path/to/bars.parquet
@@ -27,6 +34,14 @@ Usage examples
 
   # Show full score breakdown:
   python3 scripts/run_setup_scanner.py snapshot --breakdown --raw
+
+Note on non-SPY tickers
+────────────────────────
+  The direction and range ML models are trained exclusively on SPY bars.
+  When --ticker is not SPY, the forecast_prob and range_forecast score
+  components are uncalibrated — the scanner will print a notice.
+  Zone proximity, candlestick structure, and volume signals are computed
+  entirely from price/volume data and are valid for any liquid symbol.
 
 This script is read-only — it does NOT place trades.
 """
@@ -95,6 +110,7 @@ def run_scan(
     dir_model,
     range_model,
     interval:     str   = _DEFAULT_INTERVAL,
+    ticker:       str   = "SPY",
     show_breakdown: bool = False,
     show_raw:     bool  = False,
     colour:       bool  = True,
@@ -112,6 +128,10 @@ def run_scan(
     dir_model     Loaded LightGBM direction model.
     range_model   Loaded LightGBM range model.
     interval      Bar interval (e.g. "5m").
+    ticker        Symbol being scanned (default "SPY").
+                  NOTE: direction + range models are trained on SPY. For other
+                  tickers the ML probabilities are uncalibrated — zone, structure,
+                  and volume signals are still valid and used in scoring.
     show_breakdown Print score breakdown for top setup.
     show_raw      Print raw signal values.
     colour        Use ANSI colour codes in output.
@@ -132,6 +152,19 @@ def run_scan(
     """
     if df_bars.empty:
         raise ValueError("df_bars is empty")
+
+    _spy_models = ticker.upper() == "SPY"
+    if not _spy_models:
+        _warn = (
+            f"  [NOTICE] Ticker is {ticker.upper()}, but direction + range models were "
+            "trained on SPY.\n"
+            "  ML probability scores (forecast_prob, range_forecast) are uncalibrated "
+            "for this symbol.\n"
+            "  Zone proximity, structure, and volume signals are ticker-agnostic and "
+            "remain valid.\n"
+            "  Treat model-based scores as indicative only."
+        )
+        print(_warn)
 
     # ── 1. Identify the scored bar ────────────────────────────────────────
     if scored_ts is None:
@@ -234,7 +267,7 @@ def run_scan(
             ranked_results,
             bar_ts   = scored_ts,
             price    = price,
-            ticker   = TICKER,
+            ticker   = ticker,
             interval = interval,
             colour   = colour,
             log_file = log_file,
@@ -325,12 +358,13 @@ def _get_closed_bar_ts(df: pd.DataFrame, interval: str) -> pd.Timestamp:
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
     """Run a single setup scan on the latest bar."""
+    ticker = args.ticker.upper()
     print("Loading models…")
     dir_model, range_model = _load_models()
 
-    print(f"Fetching {TICKER} bars ({args.interval}, {args.lookback_days}d) via {args.provider}…")
+    print(f"Fetching {ticker} bars ({args.interval}, {args.lookback_days}d) via {args.provider}…")
     df = load_bars(
-        symbol        = TICKER,
+        symbol        = ticker,
         interval      = args.interval,
         lookback_days = args.lookback_days,
         provider      = args.provider,
@@ -346,6 +380,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         dir_model      = dir_model,
         range_model    = range_model,
         interval       = args.interval,
+        ticker         = ticker,
         show_breakdown = args.breakdown,
         show_raw       = args.raw,
         colour         = not args.no_colour,
@@ -363,7 +398,8 @@ def cmd_live(args: argparse.Namespace) -> None:
     Continuous live loop — rescan on each new closed bar.
     Runs until interrupted with Ctrl+C.
     """
-    print(f"Starting SPY Setup Scanner in LIVE mode (interval={args.interval}, sleep={args.interval_sec}s).")
+    ticker = args.ticker.upper()
+    print(f"Starting {ticker} Setup Scanner in LIVE mode (interval={args.interval}, sleep={args.interval_sec}s).")
     print("Press Ctrl+C to stop.\n")
 
     dir_model, range_model = _load_models()
@@ -386,7 +422,7 @@ def cmd_live(args: argparse.Namespace) -> None:
                 continue
 
             df = load_bars(
-                symbol        = TICKER,
+                symbol        = ticker,
                 interval      = args.interval,
                 lookback_days = args.lookback_days,
                 provider      = args.provider,
@@ -411,6 +447,7 @@ def cmd_live(args: argparse.Namespace) -> None:
                 dir_model      = dir_model,
                 range_model    = range_model,
                 interval       = args.interval,
+                ticker         = ticker,
                 show_breakdown = args.breakdown,
                 show_raw       = False,
                 colour         = not args.no_colour,
@@ -445,6 +482,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
       - Per-bar signal log to replay_log.csv
       - Summary table by setup type printed to terminal
     """
+    ticker = getattr(args, "ticker", "SPY").upper()
     print("Loading models…")
     dir_model, range_model = _load_models()
 
@@ -458,9 +496,9 @@ def cmd_replay(args: argparse.Namespace) -> None:
             df_all = pd.read_csv(fpath, index_col=0, parse_dates=True)
         df_all.index = pd.to_datetime(df_all.index)
     else:
-        print(f"Fetching {TICKER} bars ({args.interval}, {args.lookback_days}d) via {args.provider}…")
+        print(f"Fetching {ticker} bars ({args.interval}, {args.lookback_days}d) via {args.provider}…")
         df_all = load_bars(
-            symbol        = TICKER,
+            symbol        = ticker,
             interval      = args.interval,
             lookback_days = args.lookback_days,
             provider      = args.provider,
@@ -678,6 +716,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── shared options ────────────────────────────────────────────────────
     def add_shared(sp):
+        sp.add_argument("--ticker",        default="SPY",
+                        help="Symbol to scan (default SPY). Note: ML models are SPY-trained; "
+                             "zone/structure/volume signals work for any symbol.")
         sp.add_argument("--interval",      default=_DEFAULT_INTERVAL,
                         help="Bar interval (must match trained model)")
         sp.add_argument("--lookback-days", default=_DEFAULT_LOOKBACK_DAYS, type=int,
@@ -713,6 +754,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── replay ────────────────────────────────────────────────────────────
     replay = sub.add_parser("replay", help="Historical replay evaluation",
                              formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    replay.add_argument("--ticker",        default="SPY",
+                        help="Symbol for replay (default SPY)")
     replay.add_argument("--interval",      default=_DEFAULT_INTERVAL)
     replay.add_argument("--lookback-days", default=60, type=int,
                         help="Days of history to fetch for replay")
@@ -743,6 +786,7 @@ def main() -> None:
 
     if mode == "snapshot":
         if not hasattr(args, "breakdown"):
+            args.ticker = "SPY"
             args.breakdown = False
             args.raw = False
             args.no_colour = False
