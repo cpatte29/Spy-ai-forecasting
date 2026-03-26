@@ -92,18 +92,37 @@ def _fmt_pct(v: float | None) -> str:
 
 # ── main report builder ───────────────────────────────────────────────────────
 
+def _model_confidence_label(dir_prob: float | None, colour: bool) -> str:
+    """Short model-confidence tag based on distance of dir_prob from 0.5."""
+    if dir_prob is None:
+        return "n/a"
+    edge = abs(dir_prob - 0.50)
+    if edge >= 0.10:
+        label, code = f"STRONG  ({dir_prob:.2f})", _ANSI_GREEN
+    elif edge >= 0.05:
+        label, code = f"MODERATE({dir_prob:.2f})", _ANSI_YELLOW
+    else:
+        label, code = f"WEAK    ({dir_prob:.2f})", _ANSI_RED
+    return _coloured(label, code, colour)
+
+
 def format_setup_report(
     ranked_results: list[SetupResult],
     bar_ts:         pd.Timestamp | str | None = None,
     price:          float | None              = None,
     interval:       str                       = "5m",
     colour:         bool                      = True,
-    show_breakdown: bool                      = True,
+    show_breakdown: bool                      = False,
     show_raw:       bool                      = False,
     max_alts:       int                       = 3,
+    ticker:         str                       = "SPY",
 ) -> str:
     """
-    Build the full setup scanner terminal report.
+    Build the setup scanner terminal report.
+
+    Default (show_breakdown=False): compact 6-line summary.
+    With show_breakdown=True: full verbose report including conditions,
+    missing confirmations, score breakdown, guidance, and raw signals.
 
     Parameters
     ──────────
@@ -112,51 +131,34 @@ def format_setup_report(
     price            Current close price.
     interval         Bar interval string (e.g. "5m").
     colour           If True, add ANSI colour codes.
-    show_breakdown   If True, print component score breakdown for top setup.
-    show_raw         If True, print raw signal values dict.
-    max_alts         Number of alternative setups to show in the summary.
+    show_breakdown   If True, print full verbose report.
+    show_raw         If True, print raw signal values dict (breakdown only).
+    max_alts         Number of alternative setups to show.
+    ticker           Symbol being scanned (displayed in header).
 
     Returns
     ───────
     Formatted multi-line string.
     """
-    lines: list[str] = []
-    sep  = "=" * 48
-    dash = "─" * 48
+    dash = "─" * 56
 
     if bar_ts is not None:
         ts_str = pd.Timestamp(bar_ts).strftime("%Y-%m-%d %H:%M") + " ET"
     else:
         ts_str = "n/a"
 
-    price_str = f"{price:.2f}" if price is not None else "n/a"
-
-    lines.append(sep)
-    lines.append(_coloured("  SPY Setup Scanner", _ANSI_BOLD, colour))
-    lines.append(f"  Bar: {ts_str}    Interval: {interval}")
-    lines.append(f"  Current Price: {price_str}")
-    lines.append(sep)
+    price_str = f"${price:.2f}" if price is not None else "n/a"
 
     if not ranked_results:
-        lines.append("  (no results)")
-        lines.append(sep)
-        return "\n".join(lines)
+        return f"{dash}\n  {ticker}  {ts_str}  {price_str}  ({interval})  — no results\n{dash}"
 
-    top = ranked_results[0]
+    top         = ranked_results[0]
     alert_state = ALERT_GRADE_MAP.get(top.grade, AlertState.SILENT)
     alert_label = _ALERT_PREFIX.get(alert_state, "")
+    grade_c     = _GRADE_COLOUR.get(top.grade, "")
+    sym         = _DIRECTION_SYMBOL.get(top.direction.value, "─")
 
-    # ── top setup header ──────────────────────────────────────────────────
-    lines.append(_coloured(f"  Top Setup : {top.setup_type.value}", _ANSI_BOLD, colour))
-    grade_c = _GRADE_COLOUR.get(top.grade, "")
-    lines.append(
-        f"  Grade     : {_coloured(top.grade.value, grade_c, colour)}"
-        f"   Score: {top.score}/100"
-        f"   Direction: {top.direction.value}"
-    )
-    lines.append(f"  Alert     : {alert_label}")
-
-    # ── volume context line ───────────────────────────────────────────────
+    # ── volume context ────────────────────────────────────────────────────
     vol_raw = top.raw or {}
     vol_ctx_for_report = {
         "rvol":                vol_raw.get("rvol"),
@@ -167,21 +169,74 @@ def format_setup_report(
         "rejection_confirmed": vol_raw.get("rejection_confirmed", False),
         "low_participation":   vol_raw.get("low_participation", False),
     }
-    regime = vol_ctx_for_report.get("volume_regime", "NORMAL")
-    low_p  = vol_ctx_for_report.get("low_participation", False)
-    regime_colour = (
-        _ANSI_GREEN  if regime == "HIGH"   else
-        _ANSI_RED    if low_p              else
-        ""
-    )
-    vol_line = volume_regime_label(vol_ctx_for_report)
-    lines.append(f"  Volume    : {_coloured(vol_line, regime_colour, colour)}")
-    lines.append(dash)
+    regime      = vol_ctx_for_report.get("volume_regime", "NORMAL")
+    low_p       = vol_ctx_for_report.get("low_participation", False)
+    regime_col  = _ANSI_GREEN if regime == "HIGH" else (_ANSI_RED if low_p else "")
+    vol_line    = volume_regime_label(vol_ctx_for_report)
 
-    # ── why this setup ────────────────────────────────────────────────────
-    lines.append("  Why:")
-    for cond in top.conditions_met:
-        lines.append(f"    • {cond}")
+    # ── model confidence ──────────────────────────────────────────────────
+    dir_prob    = vol_raw.get("dir_prob")
+    conf_label  = _model_confidence_label(dir_prob, colour)
+
+    # ── alternatives line ─────────────────────────────────────────────────
+    alts = [r for r in ranked_results[1:] if r.setup_type != SetupType.NO_SETUP]
+    no_setup_r = [r for r in ranked_results if r.setup_type == SetupType.NO_SETUP]
+    alt_parts  = [
+        _coloured(
+            f"{r.setup_type.value} {r.grade.value}{r.score}",
+            _GRADE_COLOUR.get(r.grade, ""),
+            colour,
+        )
+        for r in alts[:2]
+    ]
+    if no_setup_r:
+        ns = no_setup_r[0]
+        alt_parts.append(_coloured(f"NO_SETUP {ns.grade.value}{ns.score}", _ANSI_DIM, colour))
+    alts_str = "  │  ".join(alt_parts) if alt_parts else "─"
+
+    # ── invalidation / target ─────────────────────────────────────────────
+    inv_str = _fmt_price(top.invalidation_level) if top.invalidation_level else "─"
+    if top.target_zone is not None:
+        lo, hi  = top.target_zone
+        tgt_str = f"{_fmt_price(lo)}–{_fmt_price(hi)}"
+    else:
+        tgt_str = "─"
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  COMPACT report  (default)
+    # ══════════════════════════════════════════════════════════════════════
+    lines: list[str] = [dash]
+    lines.append(
+        f"  {_coloured(ticker, _ANSI_BOLD, colour)}"
+        f"  {ts_str}  {price_str}  ({interval})"
+    )
+    lines.append(
+        f"  {_coloured(top.setup_type.value, grade_c + _ANSI_BOLD, colour)}"
+        f"  {_coloured(top.grade.value, grade_c, colour)}"
+        f"  {top.score}/100"
+        f"  {sym} {top.direction.value}"
+        f"   {alert_label}"
+    )
+    lines.append(f"  Vol   : {_coloured(vol_line, regime_col, colour)}")
+    lines.append(f"  Model : {conf_label}")
+    lines.append(f"  Inv   : {inv_str}   Target: {tgt_str}")
+    lines.append(f"  Alts  : {alts_str}")
+
+    if not show_breakdown:
+        lines.append(dash)
+        return "\n".join(lines)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  VERBOSE addition  (--breakdown)
+    # ══════════════════════════════════════════════════════════════════════
+    sep = "=" * 56
+    lines.append(sep)
+
+    # Conditions
+    if top.conditions_met:
+        lines.append("  Why:")
+        for cond in top.conditions_met:
+            lines.append(f"    • {cond}")
 
     if top.missing_confirms:
         lines.append("")
@@ -189,22 +244,13 @@ def format_setup_report(
         for miss in top.missing_confirms:
             lines.append(f"    ○ {miss}")
 
-    # ── invalidation ──────────────────────────────────────────────────────
-    lines.append("")
-    if top.invalidation_level is not None:
-        lines.append(f"  Invalidation : reclaim / close above/below {_fmt_price(top.invalidation_level)}")
-    else:
-        lines.append("  Invalidation : see guidance below")
+    # Guidance
+    if top.guidance:
+        lines.append("")
+        lines.append(f"  Guidance: {top.guidance}")
 
-    # ── target zone ───────────────────────────────────────────────────────
-    if top.target_zone is not None:
-        lo, hi = top.target_zone
-        lines.append(f"  Target zone  : {_fmt_price(lo)} – {_fmt_price(hi)}")
-    else:
-        lines.append("  Target zone  : next key level (see zones)")
-
-    # ── score breakdown ───────────────────────────────────────────────────
-    if show_breakdown and top.score_breakdown:
+    # Score breakdown
+    if top.score_breakdown:
         lines.append("")
         lines.append("  Score breakdown:")
         bd = top.score_breakdown
@@ -213,7 +259,7 @@ def format_setup_report(
             "analog_alignment", "structure", "volume_score", "chop_penalty", "confirmation",
         ]
         for key in component_order:
-            val = bd.get(key, 0)
+            val   = bd.get(key, 0)
             bar_w = max(0, min(20, int(abs(val) / 2)))
             bar_s = "█" * bar_w
             sign  = " " if val >= 0 else "−"
@@ -221,28 +267,10 @@ def format_setup_report(
             lines.append(f"    {label:20s} {sign}{abs(val):3d} {_coloured(bar_s, _ANSI_CYAN, colour)}")
         lines.append(f"    {'TOTAL':20s}   {bd.get('total', 0):3d}")
 
-    # ── guidance ──────────────────────────────────────────────────────────
-    lines.append("")
-    lines.append(f"  Guidance: {top.guidance}")
-
-    # ── alternative setups ────────────────────────────────────────────────
-    alts = [r for r in ranked_results[1:] if r.setup_type != SetupType.NO_SETUP]
-    if alts:
-        lines.append("")
-        lines.append("  Alternative setups:")
-        for r in alts[:max_alts]:
-            lines.append(f"    • {_grade_line(r, colour)}")
-
-    # ── no_setup reference ────────────────────────────────────────────────
-    no_setup_results = [r for r in ranked_results if r.setup_type == SetupType.NO_SETUP]
-    if no_setup_results:
-        ns = no_setup_results[0]
-        lines.append(f"    • {_grade_line(ns, colour)}")
-
-    # ── raw signals (optional) ────────────────────────────────────────────
+    # Raw signals
     if show_raw and top.raw:
         lines.append("")
-        lines.append("  Raw signal values:")
+        lines.append("  Raw signals:")
         for k, v in top.raw.items():
             if v is None:
                 continue

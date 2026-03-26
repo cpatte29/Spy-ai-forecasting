@@ -24,6 +24,10 @@ Gap / Prior   overnight_gap_pct, dist_prior_high, dist_prior_low,
               opened_in_prior_range, prior_close_reclaimed, gap_fill_pct,
               prior_day_return_pct, opened_above_prior_high_flag,
               opened_below_prior_low_flag, prior_day_vwap_distance
+Vol Regime    rv_regime_pct, vol_trend_5, signal_noise_ratio
+              These three features give the model vocabulary to detect
+              choppy / high-uncertainty market regimes (e.g. macro shock,
+              news-driven volatility) vs. clean trending conditions.
 """
 
 from __future__ import annotations
@@ -56,6 +60,14 @@ NEW_SESSION_FEATURES: list[str] = [
     "power_hour_flag",
     "lunch_hour_flag",
     "day_of_week",
+]
+
+# Volatility-regime features — help the model detect choppy / macro-shock conditions.
+# Add these to a retrain to improve edge in high-uncertainty environments.
+NEW_VOL_REGIME_FEATURES: list[str] = [
+    "rv_regime_pct",       # rolling %-rank of rv_5 over last 60 bars: 0=quiet, 1=crisis
+    "vol_trend_5",         # (rv_5 - rv_5[5]) / rv_5[5]: positive=expanding, negative=contracting
+    "signal_noise_ratio",  # |ret_5| / rv_5: near 0 in chop, high in clean trend
 ]
 
 # VWAP regime features added on top of the 39-feature session-enhanced set.
@@ -444,6 +456,21 @@ def build_features(df: pd.DataFrame, include_gap_features: bool = True) -> pd.Da
     bar_range = high - low
     for w in RANGE_WINDOWS:
         feat[f"range_mean_{w}"] = bar_range.rolling(w, min_periods=w).mean() / close
+
+    # ── Volatility regime ─────────────────────────────────────────────────
+    # rv_regime_pct: where does current rv_5 sit in its own 60-bar history?
+    # 0.0 = quietest, 1.0 = most volatile.  Captures macro / shock regimes.
+    rv5 = feat["rv_5"]
+    feat["rv_regime_pct"] = _rolling_percentile(rv5, window=60, min_periods=20)
+
+    # vol_trend_5: is volatility expanding (+) or contracting (-)?
+    # Normalised by the lagged value so it's scale-invariant.
+    rv5_lag5 = rv5.shift(5).replace(0, np.nan)
+    feat["vol_trend_5"] = ((rv5 - rv5_lag5) / rv5_lag5).clip(-2.0, 2.0)
+
+    # signal_noise_ratio: how strong is the directional signal vs. noise?
+    # High = clean trending move; near 0 = choppy / indecisive market.
+    feat["signal_noise_ratio"] = (feat["ret_5"].abs() / rv5.replace(0, np.nan)).clip(0.0, 5.0)
 
     # ── Candlestick geometry ──────────────────────────────────────────────────
     rng    = (high - low).replace(0, np.nan)

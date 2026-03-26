@@ -258,6 +258,7 @@ def run_scan(
         colour         = colour,
         show_breakdown = show_breakdown,
         show_raw       = show_raw,
+        ticker         = ticker,
     )
     print(report)
 
